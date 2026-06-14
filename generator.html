@@ -1,0 +1,77 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <link rel="stylesheet" href="generator.css" />
+  <title>AlphaFold Screening JSON Generator</title>
+</head>
+<body>
+  <header class="app-header">
+    <div class="logo">AF3</div>
+    <div>
+      <h1>Screening JSON Generator</h1>
+      <p class="subtitle">Pair screening chains with CSV targets → upload-ready AlphaFold JSON</p>
+    </div>
+  </header>
+
+  <main>
+    <section class="card">
+      <h2>1 · Screening chains</h2>
+      <p class="hint">The partner(s) present in every job. Each chain is paired with every target as a separate entry.</p>
+      <div id="chains"></div>
+      <button id="addChain" class="btn ghost">+ Add chain</button>
+    </section>
+
+    <section class="card">
+      <h2>2 · Targets CSV</h2>
+      <p class="hint">A CSV with one column of names and one of sequences. Rows with an empty sequence are skipped.</p>
+      <div class="field">
+        <label>CSV file</label>
+        <input id="csvFile" type="file" accept=".csv,text/csv" />
+      </div>
+      <div class="grid2">
+        <div class="field">
+          <label for="nameCol">Name column</label>
+          <input id="nameCol" type="text" placeholder="e.g. Name" list="csvCols" />
+        </div>
+        <div class="field">
+          <label for="seqCol">Sequence column</label>
+          <input id="seqCol" type="text" placeholder="e.g. Sequence" list="csvCols" />
+        </div>
+      </div>
+      <datalist id="csvCols"></datalist>
+      <p id="csvInfo" class="csv-info"></p>
+    </section>
+
+    <section class="card">
+      <h2>3 · Output</h2>
+      <div class="grid2">
+        <div class="field">
+          <label for="baseName">Base file name</label>
+          <input id="baseName" type="text" value="predictions" />
+        </div>
+        <div class="field">
+          <label for="chunkSize">Entries per file</label>
+          <input id="chunkSize" type="number" min="1" value="100" />
+        </div>
+      </div>
+      <div class="actions">
+        <button id="generate" class="btn primary">Generate</button>
+        <button id="downloadSplit" class="btn" disabled>Download split files</button>
+        <button id="downloadSingle" class="btn" disabled>Download one file</button>
+        <button id="copyAll" class="btn ghost" disabled>Copy all JSON</button>
+      </div>
+      <p id="status" class="status info">Add at least one screening chain and a CSV, then click Generate.</p>
+    </section>
+
+    <section class="card">
+      <h2>Preview</h2>
+      <p class="hint">First file shown below.</p>
+      <textarea id="preview" readonly spellcheck="false" placeholder="Generated JSON will appear here…"></textarea>
+    </section>
+  </main>
+
+  <script src="generator.js"></script>
+</body>
+</html>

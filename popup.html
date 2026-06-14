@@ -1,0 +1,62 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <link rel="stylesheet" href="popup.css" />
+  <title>AlphaFold3 Automation</title>
+</head>
+<body>
+  <header class="app-header">
+    <div class="logo">AF3</div>
+    <div>
+      <h1>AlphaFold3 Automation</h1>
+      <p class="subtitle">Run the suite from one-click buttons</p>
+    </div>
+  </header>
+
+  <section class="card">
+    <h2>▶ Start draft runs</h2>
+    <p class="hint">Submits saved drafts from the top of the list (Open draft → Continue → Confirm).</p>
+    <div class="row">
+      <label for="runCount">How many</label>
+      <input id="runCount" type="number" min="1" value="10" />
+      <button id="startRuns" class="btn primary">Start</button>
+    </div>
+    <label class="check">
+      <input id="confirmedMode" type="checkbox" />
+      Confirmed mode — only count submissions that report success (experimental)
+    </label>
+    <details class="advanced">
+      <summary>Advanced timing</summary>
+      <div class="row">
+        <label for="rowDelay">Delay between rows (ms)</label>
+        <input id="rowDelay" type="number" min="0" step="100" value="1200" />
+      </div>
+    </details>
+  </section>
+
+  <section class="card">
+    <h2>⬇ Download predictions</h2>
+    <p class="hint">Clicks <strong>Download</strong> for every prediction row currently visible. Zoom out so all rows are on screen.</p>
+    <div class="row">
+      <label for="dlDelay">Delay (ms)</label>
+      <input id="dlDelay" type="number" min="0" step="100" value="500" />
+      <button id="downloadAll" class="btn primary">Download all</button>
+    </div>
+  </section>
+
+  <section class="card">
+    <h2>🧬 Generate screening JSON</h2>
+    <p class="hint">Pair screening chains with a CSV of targets to build upload-ready AlphaFold JSON.</p>
+    <button id="openGenerator" class="btn">Open JSON generator</button>
+  </section>
+
+  <div id="status" class="status info">Open your AlphaFold predictions page, then choose an action.</div>
+
+  <footer class="app-footer">Runs on the active tab. Progress shows in a panel on the page.</footer>
+
+  <script src="inject.js"></script>
+  <script src="popup.js"></script>
+</body>
+</html>
