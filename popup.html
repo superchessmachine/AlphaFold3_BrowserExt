@@ -38,12 +38,19 @@
 
   <section class="card">
     <h2>⬇ Download predictions</h2>
-    <p class="hint">Clicks <strong>Download</strong> for every prediction row currently visible. Zoom out so all rows are on screen.</p>
+    <p class="hint">Clicks <strong>Download</strong> for predictions from the top of the list. Enter how many — it scrolls to reveal more rows if it can't see enough, and remembers what it grabbed so you can click again for the next batch.</p>
     <div class="row">
-      <label for="dlDelay">Delay (ms)</label>
-      <input id="dlDelay" type="number" min="0" step="100" value="500" />
-      <button id="downloadAll" class="btn primary">Download all</button>
+      <label for="dlCount">How many</label>
+      <input id="dlCount" type="number" min="1" value="10" />
+      <button id="downloadAll" class="btn primary">Download</button>
     </div>
+    <details class="advanced">
+      <summary>Advanced timing</summary>
+      <div class="row">
+        <label for="dlDelay">Delay between rows (ms)</label>
+        <input id="dlDelay" type="number" min="0" step="100" value="500" />
+      </div>
+    </details>
   </section>
 
   <section class="card">

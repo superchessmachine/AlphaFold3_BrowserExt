@@ -10,7 +10,7 @@ It does the same four jobs as the original suite:
 | --- | --- |
 | **Start draft runs** | `startDraftRuns.js` (Open draft → Continue → Confirm) |
 | **Start draft runs · Confirmed mode** | `startDraftRunsExperimental.js` (only counts confirmed submissions) |
-| **Download all predictions** | `downloadPredictions.js` |
+| **Download predictions** | `downloadPredictions.js` (enter how many; scrolls to reveal more) |
 | **Open JSON generator** | `generate_screening_json_v1.py` (now runs entirely in the browser) |
 
 While an action runs, a small progress panel appears in the **bottom-right of the
@@ -53,9 +53,11 @@ to `chrome://extensions` and click the **↻ reload** icon on the extension card
      quota/limit error). Leave it off for the simple top-down pass.
    - Already-submitted jobs are remembered for the tab session, so you can click
      again later to keep chewing through the queue without repeats.
-4. **Download all predictions** — set a delay (default 500 ms; raise it on a slow
-   connection) and click **Download all**. It opens each row's ⋮ menu and clicks
-   **Download**.
+4. **Download predictions** — enter how many to download and click **Download**.
+   It opens each row's ⋮ menu, clicks **Download**, and **scrolls to reveal more
+   rows when it can't see enough** — just like the run buttons. Downloaded jobs
+   are remembered for the tab session, so click again to grab the next batch.
+   Raise the *Advanced timing* delay (default 500 ms) on a slow connection.
 5. Watch the progress panel on the page. Use **Stop** to cancel.
 
 ### Generate screening JSON

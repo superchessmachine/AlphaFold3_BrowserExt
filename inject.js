@@ -158,47 +158,127 @@ function installAutomation() {
   const labelConfirm = 'Confirm and submit job';
 
   // -------------------------------------------------------------------------
-  // Download every visible prediction row
+  // Download predictions from the top of the list.
+  // Like startRuns, this keeps going until `desiredDownloads` rows are
+  // triggered, scrolling to reveal more rows when the visible ones run out.
+  // Already-downloaded job names are remembered for the page session so a
+  // rerun continues with the next batch instead of repeating the top rows.
+  // If desiredDownloads is omitted/invalid it falls back to downloading every
+  // row it can reach (revealing more by scrolling until nothing new loads).
   // -------------------------------------------------------------------------
   async function downloadAll(params) {
-    const delayMs = Number(params && params.delayMs) > 0 ? Number(params.delayMs) : 500;
+    params = params || {};
+    const config = Object.assign({
+      menuDelayMs: 500, idleDelayMs: 1500, maxIdleCycles: 3, rowRetryLimit: 2
+    }, params.options || {});
+    const delayMs = Number(params.delayMs) > 0 ? Number(params.delayMs) : 500;
+
+    const desired = Number(params.desiredDownloads);
+    const limited = Number.isFinite(desired) && desired > 0;
+
     if (window.__afAuto.busy) { overlay.log('Already running — please wait.', 'warn'); return { busy: true }; }
+    if (!document.querySelectorAll('tr.mat-mdc-row').length) { overlay.error('No prediction rows found on the page.'); return { triggered: 0 }; }
+
     window.__afAuto.busy = true;
     window.__afAutoStop = false;
-    overlay.start('Downloading predictions');
+    overlay.start(limited ? `Downloading ${desired} prediction(s)` : 'Downloading predictions');
+
+    // Persistent set of job names downloaded this page session so reruns skip them.
+    if (!(window.__afDownloadedPredictions instanceof Set)) {
+      const existing = window.__afDownloadedPredictions;
+      window.__afDownloadedPredictions = Array.isArray(existing) ? new Set(existing) : new Set();
+    }
+    const downloadedNames = window.__afDownloadedPredictions;
+    const failureCounts = new Map();
+
+    const rowKey = (row) => {
+      const cell = row.querySelector('.cdk-column-name, .mat-column-name');
+      const name = cell ? cell.textContent.trim() : '';
+      return name || ('__row:' + normalize(row.textContent).slice(0, 120));
+    };
+
+    const nextEligibleRow = () => {
+      const rows = Array.from(document.querySelectorAll('tr.mat-mdc-row'));
+      for (const row of rows) {
+        const key = rowKey(row);
+        if (downloadedNames.has(key)) continue;
+        if ((failureCounts.get(key) || 0) >= config.rowRetryLimit) continue;
+        return { row, key };
+      }
+      return null;
+    };
+
+    // Scroll the table to coax the next batch of rows into the DOM.
+    const getScrollContainer = () => {
+      const viewport = document.querySelector('cdk-virtual-scroll-viewport');
+      if (viewport) return viewport;
+      const table = document.querySelector('table.mat-mdc-table, .mat-mdc-table');
+      let node = table;
+      while (node && node !== document.body) {
+        const style = getComputedStyle(node);
+        if (/(auto|scroll)/.test(style.overflowY) && node.scrollHeight > node.clientHeight) return node;
+        node = node.parentElement;
+      }
+      return document.scrollingElement || document.documentElement;
+    };
+    const revealMore = async () => {
+      const rows = document.querySelectorAll('tr.mat-mdc-row');
+      const lastRow = rows[rows.length - 1];
+      if (lastRow && lastRow.scrollIntoView) lastRow.scrollIntoView({ block: 'end' });
+      const container = getScrollContainer();
+      if (container) container.scrollTop = container.scrollHeight;
+      await wait(config.idleDelayMs);
+    };
 
     try {
-      const rows = Array.from(document.querySelectorAll('tr.mat-mdc-row'));
-      if (!rows.length) { overlay.error('No prediction rows found on the page.'); return { triggered: 0, rows: 0 }; }
-      overlay.log(`Found ${rows.length} row(s).`);
-
       let triggered = 0;
-      for (let i = 0; i < rows.length; i += 1) {
-        if (window.__afAutoStop) { overlay.log('Stopped by user.', 'warn'); break; }
-        overlay.count(`Processing ${i + 1} / ${rows.length}`);
-        overlay.progress(i, rows.length);
+      let idleCycles = 0;
 
-        const menuButton = rows[i].querySelector('button.mat-mdc-menu-trigger');
-        if (!menuButton) { overlay.log(`Row ${i + 1}: menu button not found.`, 'warn'); continue; }
+      while (!limited || triggered < desired) {
+        if (window.__afAutoStop) { overlay.log('Stopped by user.', 'warn'); break; }
+
+        const selection = nextEligibleRow();
+        if (!selection) {
+          idleCycles += 1;
+          if (idleCycles > config.maxIdleCycles) { overlay.log('No more predictions to download. Stopping.', 'warn'); break; }
+          overlay.log('No new rows visible — scrolling to reveal more…', 'warn');
+          await revealMore();
+          continue;
+        }
+        idleCycles = 0;
+
+        const { row, key } = selection;
+        overlay.count(limited ? `Downloaded ${triggered} / ${desired}` : `Downloaded ${triggered}`);
+        if (limited) overlay.progress(triggered, desired);
+
+        const menuButton = row.querySelector('button.mat-mdc-menu-trigger');
+        if (!menuButton) {
+          overlay.log(`${key}: menu button not found.`, 'warn');
+          failureCounts.set(key, (failureCounts.get(key) || 0) + 1);
+          continue;
+        }
         menuButton.click();
-        await wait(500);
+        await wait(config.menuDelayMs);
 
         const items = Array.from(document.querySelectorAll('span.mat-mdc-menu-item-text'));
         const downloadItem = items.find((el) => el.textContent.trim() === 'Download');
         if (downloadItem) {
           downloadItem.click();
           triggered += 1;
-          overlay.log(`Row ${i + 1}: download triggered.`, 'ok');
+          downloadedNames.add(key);
+          overlay.log(`Downloaded ${key} (${triggered}${limited ? '/' + desired : ''}).`, 'ok');
+          if (limited) overlay.progress(triggered, desired);
         } else {
-          overlay.log(`Row ${i + 1}: "Download" not found.`, 'warn');
+          overlay.log(`${key}: "Download" not found.`, 'warn');
+          failureCounts.set(key, (failureCounts.get(key) || 0) + 1);
           closeAnyMenu();
         }
         await wait(delayMs);
       }
 
-      overlay.progress(rows.length, rows.length);
+      if (limited) overlay.progress(triggered, desired);
       overlay.done(`Finished. Triggered ${triggered} download(s).`);
-      return { triggered, rows: rows.length };
+      return { triggered };
     } finally {
       window.__afAuto.busy = false;
     }
