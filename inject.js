@@ -153,6 +153,13 @@ function installAutomation() {
     );
   };
 
+  // Read a chip's visible label only — chip.textContent also includes the icon
+  // ligature text (e.g. "edit_document"), so match on the label span instead.
+  const chipLabel = (chip) => {
+    const el = chip.querySelector('.mdc-evolution-chip__text-label, .mat-mdc-chip-action-label');
+    return normalize(el ? el.textContent : chip.textContent);
+  };
+
   // Force the status filter chips to show ONLY "Saved draft" so runs operate on
   // real drafts instead of paging through completed/example/etc. predictions.
   const ensureSavedDraftFilter = async () => {
@@ -164,7 +171,7 @@ function installAutomation() {
       if (!action) continue;
       const selected = action.getAttribute('aria-selected') === 'true'
         || chip.classList.contains('mdc-evolution-chip--selected');
-      const wantSelected = normalize(chip.textContent) === 'saved draft';
+      const wantSelected = chipLabel(chip) === 'saved draft';
       if (selected !== wantSelected) { action.click(); changed = true; await wait(300); }
     }
     if (changed) { overlay.log('Filtered to saved drafts only.', 'ok'); await wait(1500); }
@@ -430,66 +437,77 @@ function installAutomation() {
       }
     };
 
+    // ---- pagination: bump to 100/page, then walk pages, so the filter keeps
+    // looking past the first screen of rows before giving up. ----
+    const setPageSizeTo100 = async () => {
+      const paginator = document.querySelector('mat-paginator');
+      if (!paginator) return false;
+      if (normalize(paginator.textContent).includes('100')) return true;
+      const trigger = paginator.querySelector('.mat-mdc-select-trigger')
+        || paginator.querySelector('mat-select') || paginator.querySelector('[role="combobox"]');
+      if (!trigger) return false;
+      overlay.log('Showing 100 rows per page…');
+      trigger.click();
+      await wait(config.menuDelayMs);
+      const option = Array.from(document.querySelectorAll('mat-option, .mat-mdc-option'))
+        .find((o) => normalize(o.textContent) === '100');
+      if (!option) { closeAnyMenu(); return false; }
+      option.click();
+      await wait(config.idleDelayMs);
+      return true;
+    };
+
+    const clickNextPage = async () => {
+      const next = document.querySelector('button.mat-mdc-paginator-navigation-next');
+      if (!next) return false;
+      const disabled = next.disabled || next.getAttribute('aria-disabled') === 'true'
+        || next.classList.contains('mat-mdc-button-disabled')
+        || next.classList.contains('mat-mdc-button-disabled-interactive');
+      if (disabled) return false;
+      overlay.log('Next page…');
+      next.click();
+      await wait(config.idleDelayMs);
+      return true;
+    };
+
     try {
       let started = 0;
+      const failureCounts = new Map();
 
-      if (!confirmed) {
-        // ---- Simple top-down pass ----
+      const nextEligibleRow = () => {
         const rows = Array.from(document.querySelectorAll('tr.mat-mdc-row'));
-        for (let i = 0; i < rows.length && started < runLimit; i += 1) {
-          if (window.__afAutoStop) { overlay.log('Stopped by user.', 'warn'); break; }
-          const row = rows[i];
-          const jobName = readJobName(row) || `Row ${i + 1}`;
+        for (const row of rows) {
+          const jobName = readJobName(row);
+          if (!jobName || startedNames.has(jobName)) continue;
           if (!matchesFilter(jobName)) continue;
-          if (startedNames.has(jobName)) { overlay.log(`Skipping ${jobName} (already started).`, 'warn'); continue; }
-
-          overlay.count(`Started ${started} / ${runLimit}`);
-          const ok = await submitRow(row, jobName);
-          if (ok) {
-            started += 1;
-            startedNames.add(jobName);
-            startedThisRun.push(jobName);
-            overlay.log(`Submitted ${jobName} (${started}/${runLimit}).`, 'ok');
-            overlay.progress(started, runLimit);
-          }
-          await wait(config.rowDelayMs);
+          if ((failureCounts.get(jobName) || 0) >= config.rowRetryLimit) continue;
+          return { row, jobName };
         }
-      } else {
-        // ---- Confirmed mode: loop until N successes ----
-        const failureCounts = new Map();
-        const nextEligibleRow = () => {
-          const rows = Array.from(document.querySelectorAll('tr.mat-mdc-row'));
-          for (const row of rows) {
-            const jobName = readJobName(row);
-            if (!jobName || startedNames.has(jobName)) continue;
-            if (!matchesFilter(jobName)) continue;
-            if ((failureCounts.get(jobName) || 0) >= config.rowRetryLimit) continue;
-            return { row, jobName };
-          }
-          return null;
-        };
+        return null;
+      };
 
-        let idleCycles = 0;
-        while (started < runLimit) {
-          if (window.__afAutoStop) { overlay.log('Stopped by user.', 'warn'); break; }
-          const selection = nextEligibleRow();
-          if (!selection) {
-            idleCycles += 1;
-            if (idleCycles > config.maxIdleCycles) { overlay.log('No eligible drafts remain. Stopping.', 'warn'); break; }
-            overlay.log('No eligible drafts found. Waiting for table to update…', 'warn');
-            await wait(config.idleDelayMs);
-            continue;
-          }
-          idleCycles = 0;
+      let pageSizeExpanded = false;
+      while (started < runLimit) {
+        if (window.__afAutoStop) { overlay.log('Stopped by user.', 'warn'); break; }
 
-          const { row, jobName } = selection;
-          overlay.count(`Confirmed ${started} / ${runLimit}`);
-          const confirmClicked = await submitRow(row, jobName);
-          if (!confirmClicked) {
-            failureCounts.set(jobName, (failureCounts.get(jobName) || 0) + 1);
-            continue;
-          }
+        const selection = nextEligibleRow();
+        if (!selection) {
+          // Out of matching rows on this page — reveal more before giving up.
+          if (!pageSizeExpanded) { pageSizeExpanded = true; if (await setPageSizeTo100()) continue; }
+          if (await clickNextPage()) continue;
+          overlay.log('No more pages / eligible drafts. Stopping.', 'warn');
+          break;
+        }
 
+        const { row, jobName } = selection;
+        overlay.count(`${confirmed ? 'Confirmed' : 'Started'} ${started} / ${runLimit}`);
+        const confirmClicked = await submitRow(row, jobName);
+        if (!confirmClicked) {
+          failureCounts.set(jobName, (failureCounts.get(jobName) || 0) + 1);
+          continue;
+        }
+
+        if (confirmed) {
           const outcome = await waitForSubmissionOutcome();
           if (outcome.success) {
             started += 1;
@@ -503,8 +521,14 @@ function installAutomation() {
             overlay.log(`Failed ${jobName} (${count}x): ${outcome.message}`, 'warn');
             if (outcome.fatal) { overlay.error('Stopping after a quota / limit error.'); break; }
           }
-          await wait(config.rowDelayMs);
+        } else {
+          started += 1;
+          startedNames.add(jobName);
+          startedThisRun.push(jobName);
+          overlay.log(`Submitted ${jobName} (${started}/${runLimit}).`, 'ok');
+          overlay.progress(started, runLimit);
         }
+        await wait(config.rowDelayMs);
       }
 
       if (startedThisRun.length === 0) overlay.done('Finished. No jobs were submitted.');
