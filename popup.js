@@ -48,9 +48,10 @@ $('startRuns').addEventListener('click', () => {
   const desiredRuns = parseInt($('runCount').value, 10);
   if (!Number.isFinite(desiredRuns) || desiredRuns <= 0) { setStatus('Enter how many runs to start (1 or more).', 'err'); return; }
   const confirmed = $('confirmedMode').checked;
+  const titleFilter = $('titleFilter').value.trim();
   const rowDelayMs = parseInt($('rowDelay').value, 10);
   const options = Number.isFinite(rowDelayMs) ? { rowDelayMs } : {};
-  trigger('startRuns', { desiredRuns, confirmed, options });
+  trigger('startRuns', { desiredRuns, confirmed, titleFilter, options });
 });
 
 $('downloadAll').addEventListener('click', () => {

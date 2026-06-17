@@ -153,6 +153,23 @@ function installAutomation() {
     );
   };
 
+  // Force the status filter chips to show ONLY "Saved draft" so runs operate on
+  // real drafts instead of paging through completed/example/etc. predictions.
+  const ensureSavedDraftFilter = async () => {
+    const chips = Array.from(document.querySelectorAll('mat-chip-option'));
+    if (!chips.length) return;
+    let changed = false;
+    for (const chip of chips) {
+      const action = chip.querySelector('button.mat-mdc-chip-action');
+      if (!action) continue;
+      const selected = action.getAttribute('aria-selected') === 'true'
+        || chip.classList.contains('mdc-evolution-chip--selected');
+      const wantSelected = normalize(chip.textContent) === 'saved draft';
+      if (selected !== wantSelected) { action.click(); changed = true; await wait(300); }
+    }
+    if (changed) { overlay.log('Filtered to saved drafts only.', 'ok'); await wait(1500); }
+  };
+
   const labelOpenDraft = 'Open draft';
   const labelContinue = 'Continue and preview job';
   const labelConfirm = 'Confirm and submit job';
@@ -307,6 +324,13 @@ function installAutomation() {
     window.__afAutoStop = false;
     overlay.start(confirmed ? `Starting ${runLimit} run(s) — confirmed` : `Starting ${runLimit} run(s)`);
 
+    // Only run drafts whose title contains this text (case-insensitive). Empty = run any.
+    const titleNeedle = normalize(params.titleFilter || '');
+    const matchesFilter = (name) => !titleNeedle || normalize(name).includes(titleNeedle);
+    if (titleNeedle) overlay.log(`Only running titles containing "${params.titleFilter.trim()}".`);
+
+    await ensureSavedDraftFilter();
+
     const startedNames = window.__afStartedPredictions;
     const startedThisRun = [];
 
@@ -416,6 +440,7 @@ function installAutomation() {
           if (window.__afAutoStop) { overlay.log('Stopped by user.', 'warn'); break; }
           const row = rows[i];
           const jobName = readJobName(row) || `Row ${i + 1}`;
+          if (!matchesFilter(jobName)) continue;
           if (startedNames.has(jobName)) { overlay.log(`Skipping ${jobName} (already started).`, 'warn'); continue; }
 
           overlay.count(`Started ${started} / ${runLimit}`);
@@ -437,6 +462,7 @@ function installAutomation() {
           for (const row of rows) {
             const jobName = readJobName(row);
             if (!jobName || startedNames.has(jobName)) continue;
+            if (!matchesFilter(jobName)) continue;
             if ((failureCounts.get(jobName) || 0) >= config.rowRetryLimit) continue;
             return { row, jobName };
           }
