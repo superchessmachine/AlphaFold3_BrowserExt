@@ -54,6 +54,13 @@ $('startRuns').addEventListener('click', () => {
   trigger('startRuns', { desiredRuns, confirmed, titleFilter, options });
 });
 
+$('deleteDrafts').addEventListener('click', () => {
+  const titleFilter = $('deleteFilter').value.trim();
+  if (!titleFilter) { setStatus('Enter title text to match before deleting drafts.', 'err'); return; }
+  if (!confirm(`Delete saved drafts whose title contains "${titleFilter}"?`)) return;
+  trigger('deleteDrafts', { titleFilter });
+});
+
 $('downloadAll').addEventListener('click', () => {
   const desiredDownloads = parseInt($('dlCount').value, 10);
   if (!Number.isFinite(desiredDownloads) || desiredDownloads <= 0) { setStatus('Enter how many predictions to download (1 or more).', 'err'); return; }

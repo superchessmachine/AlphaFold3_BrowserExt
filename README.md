@@ -4,12 +4,13 @@ A Chromium (Chrome / Edge / Brave) browser extension that turns the
 [AlphaFold3 Webserver Automation](https://github.com/superchessmachine/AlphaFold3-Webserver-Automation)
 console scripts into one-click buttons. No more pasting code into DevTools.
 
-It does the same four jobs as the original suite:
+It does the same five jobs as the original suite:
 
 | Button | Equivalent script |
 | --- | --- |
 | **Start draft runs** | `startDraftRuns.js` (Open draft → Continue → Confirm) |
 | **Start draft runs · Confirmed mode** | `startDraftRunsExperimental.js` (only counts confirmed submissions) |
+| **Delete saved drafts** | `deleteSavedDraftsBySearch.js` (requires a title search term) |
 | **Download predictions** | `downloadPredictions.js` (enter how many; scrolls to reveal more) |
 | **Open JSON generator** | `generate_screening_json_v1.py` (now runs entirely in the browser) |
 
@@ -53,12 +54,14 @@ to `chrome://extensions` and click the **↻ reload** icon on the extension card
      quota/limit error). Leave it off for the simple top-down pass.
    - Already-submitted jobs are remembered for the tab session, so you can click
      again later to keep chewing through the queue without repeats.
-4. **Download predictions** — enter how many to download and click **Download**.
+4. **Delete saved drafts** — enter title text and click **Delete**. It switches
+   the table to **Saved draft** only, then deletes matching draft rows.
+5. **Download predictions** — enter how many to download and click **Download**.
    It opens each row's ⋮ menu, clicks **Download**, and **scrolls to reveal more
    rows when it can't see enough** — just like the run buttons. Downloaded jobs
    are remembered for the tab session, so click again to grab the next batch.
    Raise the *Advanced timing* delay (default 500 ms) on a slow connection.
-5. Watch the progress panel on the page. Use **Stop** to cancel.
+6. Watch the progress panel on the page. Use **Stop** to cancel.
 
 ### Generate screening JSON
 1. Click **Open JSON generator** (opens in a new tab).

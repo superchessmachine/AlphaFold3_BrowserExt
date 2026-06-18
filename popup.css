@@ -56,13 +56,15 @@ body {
   margin-bottom: 6px;
 }
 .row label { color: var(--muted); white-space: nowrap; }
-.row input[type="number"] {
-  width: 76px;
+.row input[type="number"],
+.row input[type="text"] {
   padding: 6px 8px;
   border: 1px solid var(--border);
   border-radius: 6px;
   font-size: 13px;
 }
+.row input[type="number"] { width: 76px; }
+.row input[type="text"] { min-width: 0; flex: 1; }
 .row .btn { margin-left: auto; }
 
 .check {
@@ -97,6 +99,12 @@ body {
   color: #fff;
 }
 .btn.primary:hover { background: var(--blue-dark); }
+.btn.danger {
+  background: var(--err);
+  border-color: var(--err);
+  color: #fff;
+}
+.btn.danger:hover { background: #a50e0e; }
 .btn:active { transform: translateY(1px); }
 
 .status {

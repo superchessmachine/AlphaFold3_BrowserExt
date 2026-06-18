@@ -146,10 +146,20 @@ function installAutomation() {
     return spanMatch ? (spanMatch.closest('button') || spanMatch) : null;
   };
 
+  const findMenuButtonByLabels = (labels) => labels.map(findMenuButtonByLabel).find(Boolean) || null;
+
   const findButtonByLabel = (label) => {
     const target = normalize(label);
     return Array.from(document.querySelectorAll('button')).find(
       (btn) => normalize(btn.textContent) === target && !btn.disabled
+    );
+  };
+
+  const findDialogButtonByLabels = (labels) => {
+    const targets = labels.map(normalize);
+    const scope = document.querySelector('.mat-mdc-dialog-container, mat-dialog-container') || document;
+    return Array.from(scope.querySelectorAll('button')).find(
+      (btn) => !btn.disabled && targets.includes(normalize(btn.textContent))
     );
   };
 
@@ -180,6 +190,8 @@ function installAutomation() {
   const labelOpenDraft = 'Open draft';
   const labelContinue = 'Continue and preview job';
   const labelConfirm = 'Confirm and submit job';
+  const labelDeleteDrafts = ['Delete', 'Delete draft', 'Delete prediction', 'Remove'];
+  const labelConfirmDelete = ['Delete', 'Delete draft', 'Confirm', 'OK'];
 
   // -------------------------------------------------------------------------
   // Download predictions from the top of the list.
@@ -303,6 +315,145 @@ function installAutomation() {
       if (limited) overlay.progress(triggered, desired);
       overlay.done(`Finished. Triggered ${triggered} download(s).`);
       return { triggered };
+    } finally {
+      window.__afAuto.busy = false;
+    }
+  }
+
+  // -------------------------------------------------------------------------
+  // Delete saved drafts whose title contains a required search term.
+  // -------------------------------------------------------------------------
+  async function deleteDrafts(params) {
+    params = params || {};
+    const config = Object.assign({
+      menuDelayMs: 400, dialogDelayMs: 600, pageDelayMs: 1200,
+      overlayTimeoutMs: 10000, overlayPollMs: 120
+    }, params.options || {});
+
+    const titleFilter = (params.titleFilter || '').trim();
+    const titleNeedle = normalize(titleFilter);
+    if (!titleNeedle) { overlay.error('Enter a title search term before deleting drafts.'); return { deleted: 0 }; }
+    if (window.__afAuto.busy) { overlay.log('Already running — please wait.', 'warn'); return { busy: true }; }
+
+    window.__afAuto.busy = true;
+    window.__afAutoStop = false;
+    overlay.start('Deleting saved drafts');
+    overlay.log(`Only deleting titles containing "${titleFilter}".`, 'warn');
+
+    const waitForElement = (resolver) => new Promise((resolve, reject) => {
+      const start = performance.now();
+      const lookup = () => {
+        const element = typeof resolver === 'string' ? document.querySelector(resolver) : resolver();
+        if (element) { resolve(element); return; }
+        if (performance.now() - start > config.overlayTimeoutMs) { reject(new Error('Timed out waiting for element.')); return; }
+        setTimeout(lookup, config.overlayPollMs);
+      };
+      lookup();
+    });
+
+    const readJobName = (row) => {
+      const cell = row.querySelector('.cdk-column-name, .mat-column-name');
+      const raw = cell ? cell.textContent.trim() : '';
+      return raw || null;
+    };
+
+    const matchesFilter = (name) => normalize(name).includes(titleNeedle);
+
+    const setPageSizeTo100 = async () => {
+      const paginator = document.querySelector('mat-paginator');
+      if (!paginator || normalize(paginator.textContent).includes('100')) return false;
+      const trigger = paginator.querySelector('.mat-mdc-select-trigger')
+        || paginator.querySelector('mat-select') || paginator.querySelector('[role="combobox"]');
+      if (!trigger) return false;
+      overlay.log('Showing 100 rows per page...');
+      trigger.click();
+      await wait(config.menuDelayMs);
+      const option = Array.from(document.querySelectorAll('mat-option, .mat-mdc-option'))
+        .find((o) => normalize(o.textContent) === '100');
+      if (!option) { closeAnyMenu(); return false; }
+      option.click();
+      await wait(config.pageDelayMs);
+      return true;
+    };
+
+    const clickNextPage = async () => {
+      const next = document.querySelector('button.mat-mdc-paginator-navigation-next');
+      if (!next) return false;
+      const disabled = next.disabled || next.getAttribute('aria-disabled') === 'true'
+        || next.classList.contains('mat-mdc-button-disabled')
+        || next.classList.contains('mat-mdc-button-disabled-interactive');
+      if (disabled) return false;
+      overlay.log('Next page...');
+      next.click();
+      await wait(config.pageDelayMs);
+      return true;
+    };
+
+    const deletedNames = [];
+    const skippedNames = new Set();
+
+    const nextEligibleRow = () => {
+      const rows = Array.from(document.querySelectorAll('tr.mat-mdc-row'));
+      for (const row of rows) {
+        const jobName = readJobName(row);
+        if (!jobName || skippedNames.has(jobName)) continue;
+        if (!matchesFilter(jobName)) continue;
+        return { row, jobName };
+      }
+      return null;
+    };
+
+    const deleteRow = async (row, jobName) => {
+      const menuButton = row.querySelector('button.mat-mdc-menu-trigger');
+      if (!menuButton) { overlay.log(`${jobName}: menu trigger not found.`, 'warn'); return false; }
+
+      overlay.log(`Deleting ${jobName}...`);
+      menuButton.click();
+      await wait(config.menuDelayMs);
+
+      const deleteButton = findMenuButtonByLabels(labelDeleteDrafts);
+      if (!deleteButton) { overlay.log(`${jobName}: delete action not found.`, 'warn'); closeAnyMenu(); return false; }
+      deleteButton.click();
+      await wait(config.dialogDelayMs);
+
+      try {
+        const confirmButton = await waitForElement(() => findDialogButtonByLabels(labelConfirmDelete));
+        confirmButton.click();
+        await wait(config.pageDelayMs);
+        return true;
+      } catch (e) {
+        overlay.log(`${jobName}: failed to confirm delete.`, 'warn');
+        closeAnyMenu();
+        return false;
+      }
+    };
+
+    try {
+      await ensureSavedDraftFilter();
+      if (!document.querySelectorAll('tr.mat-mdc-row').length) { overlay.error('No saved draft rows found on the page.'); return { deleted: 0 }; }
+
+      let pageSizeExpanded = false;
+      while (true) {
+        if (window.__afAutoStop) { overlay.log('Stopped by user.', 'warn'); break; }
+
+        const selection = nextEligibleRow();
+        if (selection) {
+          const didDelete = await deleteRow(selection.row, selection.jobName);
+          skippedNames.add(selection.jobName);
+          if (didDelete) {
+            deletedNames.push(selection.jobName);
+            overlay.count(`Deleted ${deletedNames.length}`);
+          }
+          continue;
+        }
+
+        if (!pageSizeExpanded) { pageSizeExpanded = true; if (await setPageSizeTo100()) continue; }
+        if (await clickNextPage()) continue;
+        break;
+      }
+
+      overlay.done(`Finished. Deleted ${deletedNames.length} draft(s).`);
+      return { deleted: deletedNames.length, names: deletedNames };
     } finally {
       window.__afAuto.busy = false;
     }
@@ -539,6 +690,6 @@ function installAutomation() {
     }
   }
 
-  window.__afAuto = { overlay, busy: false, downloadAll, startRuns };
+  window.__afAuto = { overlay, busy: false, downloadAll, deleteDrafts, startRuns };
   return true;
 }
