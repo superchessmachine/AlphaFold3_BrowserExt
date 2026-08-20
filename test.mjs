@@ -48,6 +48,14 @@ globalThis.document.createElement = () => {
   return a;
 };
 
+function cmd(name, extra = {}) {
+  const id = 'cmd-' + Math.random().toString(36).slice(2);
+  return new Promise((resolve) => {
+    listeners.push((e) => { if (e.data.__af === 'ack' && e.data.id === id) resolve(e.data); });
+    globalThis.window.postMessage(Object.assign({ __af: 'cmd', id, cmd: name }, extra));
+  });
+}
+
 async function flush(label) {
   const id = 'flush-' + label;
   let acked = null;
@@ -92,7 +100,53 @@ const z64 = readFileSync(join(dir, 'zip64.zip'));
 assert.ok(z64.includes(Buffer.from([0x50, 0x4b, 0x06, 0x06])), 'zip64 EOCD record missing');
 assert.ok(z64.includes(Buffer.from([0x50, 0x4b, 0x06, 0x07])), 'zip64 EOCD locator missing');
 
+// ---------------------------------------------------------------------------
+// Streaming sink: files are written through to a FileSystemWritableFileStream as
+// they arrive, so nothing accumulates. This is the path a 300-structure
+// incognito run takes — holding the Blobs instead is what exhausts memory.
+// Driven through the real anchor-click interception, and with the zip64
+// threshold lowered so the 64-bit headers are exercised here too.
+// ---------------------------------------------------------------------------
+const chunks = [];
+globalThis.window.showSaveFilePicker = async () => ({
+  name: 'stream.zip',
+  createWritable: async () => ({
+    write: async (c) => chunks.push(c instanceof Blob ? Buffer.from(await c.arrayBuffer()) : Buffer.from(c)),
+    close: async () => {}
+  })
+});
+const bodies = new Map(files.map((f, i) => ['https://af.test/' + i, f.body]));
+globalThis.fetch = async (u) => ({ ok: true, blob: async () => new Blob([bodies.get(u)]) });
+
+globalThis.window.__afCap.zip64Limit = 100;
+await cmd('arm', { on: true });
+const picked = await cmd('pick', { filename: 'stream.zip' });
+assert.strictEqual(picked.ok, true, 'save picker was refused: ' + picked.reason);
+
+files.forEach((f, i) => {
+  const a = Object.create(anchorProto);
+  a.href = 'https://af.test/' + i;
+  a.hasAttribute = (n) => n === 'download';
+  a.getAttribute = (n) => (n === 'download' ? f.name : null);
+  a.click();                       // goes through the patched prototype
+});
+
+const streamed = await cmd('flush');
+assert.strictEqual(streamed.error, undefined, 'stream flush errored: ' + streamed.error);
+assert.deepStrictEqual(streamed.failed, [], 'stream reported capture failures');
+assert.strictEqual(streamed.count, 3, 'stream wrote the wrong number of entries');
+writeFileSync(join(dir, 'stream.zip'), Buffer.concat(chunks));
+execFileSync('unzip', ['-t', join(dir, 'stream.zip')], { stdio: 'pipe' });
+const streamedContents = execFileSync('python3', ['-c', `
+import json, sys, zipfile
+z = zipfile.ZipFile(sys.argv[1])
+assert z.testzip() is None
+print(json.dumps({i.filename: z.read(i).decode() for i in z.infolist()}))
+`, join(dir, 'stream.zip')], { encoding: 'utf8' }).trim();
+assert.deepStrictEqual(JSON.parse(streamedContents), expected, 'streamed contents did not round-trip');
+
 console.log('zip self-check passed: zip32 + zip64 archives, CRCs valid, UTF-8 names and contents round-trip');
+console.log('stream self-check passed: intercepted downloads write straight through to one valid zip64 archive');
 
 // ---------------------------------------------------------------------------
 // isDisabled — pulled straight out of inject.js so the check cannot drift from

@@ -108,6 +108,23 @@ function installAutomation() {
         logEl.scrollTop = logEl.scrollHeight;
       },
       count(text) { build(); countEl.textContent = text; },
+      // Returns a promise that resolves when the user clicks the button. Used
+      // to get the user gesture that showSaveFilePicker() requires.
+      ask(label) {
+        build();
+        return new Promise((resolve) => {
+          const btn = document.createElement('button');
+          btn.textContent = label;
+          Object.assign(btn.style, {
+            display: 'block', width: '100%', margin: '8px 0', padding: '8px',
+            border: 'none', borderRadius: '6px', cursor: 'pointer',
+            background: '#1a73e8', color: '#fff', fontSize: '13px', fontWeight: '600'
+          });
+          btn.onclick = () => { btn.remove(); resolve(true); };
+          logEl.appendChild(btn);
+          logEl.scrollTop = logEl.scrollHeight;
+        });
+      },
       progress(done, total) {
         build();
         const pct = total > 0 ? Math.round((done / total) * 100) : 0;
@@ -274,7 +291,7 @@ function installAutomation() {
     params = params || {};
     const config = Object.assign({
       menuDelayMs: 500, idleDelayMs: 1500, maxIdleCycles: 3, rowRetryLimit: 2,
-      captureWaitMs: 12000, maxEmptyPages: 50
+      captureWaitMs: 12000, maxEmptyPages: 50, maxPending: 3
     }, params.options || {});
     const delayMs = Number(params.delayMs) > 0 ? Number(params.delayMs) : 500;
 
@@ -316,17 +333,21 @@ function installAutomation() {
       window.__afZipProgressHooked = true;
       window.addEventListener('message', (event) => {
         if (event.source === window && event.data && event.data.__af === 'zipProgress') {
-          overlay.count(`Zipping ${event.data.done} / ${event.data.total}`);
-          overlay.progress(event.data.done, event.data.total);
+          const d = event.data;
+          if (d.total) { overlay.count(`Zipping ${d.done} / ${d.total}`); overlay.progress(d.done, d.total); }
+          else overlay.count(`Written ${d.done} file(s), ${(d.bytes / 1073741824).toFixed(2)} GB`);
         }
       });
     }
+    const failedNames = [];
     const flushArchive = async () => {
-      overlay.log(`Packaging everything into ${zipName} — this can take a while for a big run…`);
+      overlay.log(`Finishing ${zipName}…`);
       const res = await capSend({ cmd: 'flush', filename: zipName });
-      if (!res || res.error) { overlay.log(`Packaging failed: ${res ? res.error : 'timed out'}`, 'err'); return 0; }
+      if (!res) { overlay.log('Packaging timed out.', 'err'); return 0; }
+      if (res.failed && res.failed.length) failedNames.push(...res.failed);
+      if (res.error) { overlay.log(`Packaging failed: ${res.error}`, 'err'); return 0; }
       if (!res.count) return 0;
-      overlay.log(`Saved ${zipName} (${res.count} file(s), ${(res.bytes / 1073741824).toFixed(2)} GB).`, 'ok');
+      overlay.log(`Saved ${res.name || zipName} (${res.count} file(s), ${(res.bytes / 1073741824).toFixed(2)} GB).`, 'ok');
       return res.count;
     };
 
@@ -392,8 +413,20 @@ function installAutomation() {
 
     if (bundle) {
       const armed = await capSend({ cmd: 'arm', on: true });
-      if (!armed) { bundle = false; overlay.log('Capture shim not responding — falling back to one download per row.', 'warn'); }
-      else overlay.log('Bundling the whole run into one ZIP.');
+      if (!armed) {
+        bundle = false;
+        overlay.log('Capture shim not responding — falling back to one download per row.', 'warn');
+      } else {
+        overlay.log('Bundling the whole run into one ZIP.');
+        // Stream straight into a file the user picks, so nothing is held in
+        // memory. Incognito keeps Blobs in RAM, which is what breaks a
+        // several-GB run if we accumulate them instead.
+        overlay.log('Pick where to save the ZIP — everything streams into that one file.');
+        await overlay.ask('Choose where to save ' + zipName);
+        const picked = await capSend({ cmd: 'pick', filename: zipName });
+        if (picked && picked.ok) overlay.log(`Streaming into ${picked.name}.`, 'ok');
+        else overlay.log(`No save file chosen (${picked ? picked.reason : 'timed out'}) — holding files in memory instead, which can fail on very large runs.`, 'warn');
+      }
     }
 
     try {
@@ -426,6 +459,16 @@ function installAutomation() {
         const { row, key } = selection;
         overlay.count(limited ? `Downloaded ${triggered} / ${desired}` : `Downloaded ${triggered}`);
         if (limited) overlay.progress(triggered, desired);
+
+        // Do not let captures pile up — each one holds a whole AF3 bundle.
+        if (bundle) {
+          for (let i = 0; i < 100; i++) {
+            const st = await capSend({ cmd: 'status' });
+            if (!st || st.pending < config.maxPending) break;
+            overlay.count(`Waiting for ${st.pending} file(s) to finish downloading…`);
+            await wait(500);
+          }
+        }
 
         const menuButton = row.querySelector('button.mat-mdc-menu-trigger');
         if (!menuButton) {
@@ -472,11 +515,21 @@ function installAutomation() {
               overlay.log('Could not intercept the download — continuing without ZIP packaging.', 'warn');
             }
           }
+          if (triggered % 25 === 0) {
+            const st = await capSend({ cmd: 'status' });
+            if (st && st.failed) overlay.log(`${st.failed} capture failure(s) so far.`, 'warn');
+          }
         }
       }
 
       let packaged = 0;
       if (bundle) { packaged = await flushArchive(); await capSend({ cmd: 'arm', on: false }); }
+      if (failedNames.length) {
+        // Not in the archive, so make sure a rerun picks them up again.
+        for (const name of failedNames) logged.delete(name.replace(/ \(.*\)$/, '').replace(/\.zip$/, ''));
+        overlay.log(`${failedNames.length} file(s) could not be captured and were left out: ${failedNames.slice(0, 5).join(', ')}${failedNames.length > 5 ? '…' : ''}`, 'err');
+        overlay.log('They were removed from the log, so running again will retry them.', 'warn');
+      }
       await saveLog();
 
       if (limited) overlay.progress(triggered, desired);

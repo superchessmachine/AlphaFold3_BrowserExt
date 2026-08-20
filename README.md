@@ -69,18 +69,25 @@ to `chrome://extensions` and click the **↻ reload** icon on the extension card
      it if you want to re-download.
    - **Package the whole run into one ZIP** — instead of firing one download
      per row (and having Chrome ask you to approve 300 of them), the extension
-     intercepts each file, holds it, and at the end saves **one** ZIP for the
-     entire run. One download, one approval, so **incognito works too** —
-     incognito never remembers a per-site "allow multiple downloads" answer,
-     which is why the plain click-per-row approach is painful there. Make sure
-     the extension is allowed in incognito: `chrome://extensions` → the card's
-     **Details** → **Allow in Incognito**.
-     The archive is written with zip64 headers, so there is no 4 GB ceiling and
-     no splitting: 300 structures means one file with 300 structures in it.
-     Zipping shows its own progress bar at the end of the run (CRCs over several
-     GB take a minute). If the page turns out to use a download path the
-     interceptor cannot hook, it says so in the progress panel and falls back to
-     plain per-row downloads rather than losing files.
+     intercepts every file and writes them all into **one** archive. One save,
+     one approval, so **incognito works too** — incognito never remembers a
+     per-site "allow multiple downloads" answer, which is why the plain
+     click-per-row approach is painful there. Make sure the extension is allowed
+     in incognito: `chrome://extensions` → the card's **Details** → **Allow in
+     Incognito**.
+
+     When the run starts, the progress panel asks you to **choose where to save
+     the ZIP**. Pick a location and every file streams straight into it as it
+     arrives, so memory stays flat however big the run gets. This matters:
+     incognito keeps blobs in RAM, so holding a few hundred AlphaFold bundles
+     before zipping them runs the browser out of memory partway through. If you
+     cancel the picker it falls back to holding files in memory, which is fine
+     for small runs and will fail on large ones.
+
+     The archive uses zip64 headers, so there is no 4 GB ceiling and no
+     splitting: 310 structures means one file with 310 structures in it.
+     Anything that genuinely cannot be captured is listed at the end and removed
+     from the log, so running again retries just those.
    - Raise the *Advanced timing* delay (default 500 ms) on a slow connection.
 
 6. Watch the progress panel on the page. Use **Stop** to cancel.
@@ -145,7 +152,7 @@ icons/            Toolbar icons (16/48/128 px)
 node test.mjs
 ```
 
-Covers the two pieces of logic that are easy to get subtly wrong: the ZIP
-writer (both the zip32 and zip64 paths, verified with `unzip -t` and Python's
-`zipfile`) and the paginator's disabled-state test, which decides whether the
-▶ arrow gets clicked.
+Covers the pieces that are easy to get subtly wrong: the ZIP writer (zip32 and
+zip64, in-memory and streamed, verified with `unzip -t` and Python's `zipfile`),
+the download interception itself, and the paginator's disabled-state test, which
+decides whether the ▶ arrow gets clicked.
