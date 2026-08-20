@@ -52,10 +52,10 @@
 
   <section class="card">
     <h2>⬇ Download predictions</h2>
-    <p class="hint">Clicks <strong>Download</strong> for matching predictions, walks forward with the paginator's ▶ arrow, skips anything already in the log, and bundles each batch into a single ZIP so Chrome only asks once — including in incognito.</p>
+    <p class="hint">Clicks <strong>Download</strong> for matching predictions, walks forward with the paginator's ▶ arrow, skips anything already in the log, and bundles the entire run into a single ZIP so Chrome only asks once — including in incognito.</p>
     <div class="row">
       <label for="dlFilter">Title contains</label>
-      <input id="dlFilter" type="text" placeholder="optional — e.g. Sin3A" />
+      <input id="dlFilter" type="text" placeholder="optional — e.g. P53" />
     </div>
     <div class="row">
       <label for="dlCount">How many</label>
@@ -64,12 +64,8 @@
     </div>
     <label class="check">
       <input id="dlBundle" type="checkbox" checked />
-      Package each batch into one ZIP (falls back to plain downloads if the page blocks it)
+      Package the whole run into one ZIP (falls back to plain downloads if the page blocks it)
     </label>
-    <div class="row">
-      <label for="dlBatch">Files per ZIP</label>
-      <input id="dlBatch" type="number" min="1" value="25" />
-    </div>
     <div class="row">
       <span id="dlLogCount" class="hint">Log: loading…</span>
       <button id="clearLog" class="btn">Clear log</button>

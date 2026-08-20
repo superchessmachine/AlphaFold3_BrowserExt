@@ -13,7 +13,7 @@
   if (window.__afCapInstalled) return;
   window.__afCapInstalled = true;
 
-  const state = { armed: false, files: [], bytes: 0, pending: 0, seen: new Set() };
+  const state = { armed: false, files: [], bytes: 0, pending: 0, seen: new Set(), zip64Limit: 0xffffffff };
   window.__afCap = state; // exposed for debugging / the zip self-check
   const origAnchorClick = HTMLAnchorElement.prototype.click;
   const origOpen = window.open;
@@ -43,60 +43,110 @@
     return (c ^ 0xffffffff) >>> 0;
   };
 
-  // ponytail: zip32 only — no zip64. Entries and the archive must stay under
-  // 4 GB, which the batch-size knob in the popup already keeps you under.
-  // Add zip64 headers if someone really wants a single >4 GB bundle.
-  const buildZip = async (files) => {
+  const U32 = 0xffffffff;
+
+  // One archive for the whole run, however big — so zip64 headers are required
+  // once the bundle passes 4 GB or an entry's offset does. state.zip64Limit is
+  // only lowered by the self-check, to exercise this path with tiny files.
+  const buildZip = async (files, onProgress) => {
+    const limit = state.zip64Limit;
     const enc = new TextEncoder();
     const body = [];
     const central = [];
     let offset = 0;
     let centralSize = 0;
 
+    let index = 0;
     for (const f of files) {
       const nameBytes = enc.encode(f.name);
       const crc = await crc32(f.blob);
+      if (onProgress) onProgress(++index, files.length);
       const size = f.blob.size;
+      const bigSize = size > limit;
+      const bigOffset = offset > limit;
+      const version = bigSize || bigOffset ? 45 : 20;
 
+      // NOTE: in both headers the extra field comes AFTER the file name.
+      const lhExtra = new DataView(new ArrayBuffer(bigSize ? 20 : 0));
+      if (bigSize) {
+        lhExtra.setUint16(0, 0x0001, true);
+        lhExtra.setUint16(2, 16, true);
+        lhExtra.setBigUint64(4, BigInt(size), true);
+        lhExtra.setBigUint64(12, BigInt(size), true);
+      }
       const lh = new DataView(new ArrayBuffer(30));
       lh.setUint32(0, 0x04034b50, true);
-      lh.setUint16(4, 20, true);      // version needed
-      lh.setUint16(6, 0x0800, true);  // UTF-8 names
-      lh.setUint16(8, 0, true);       // method: store
-      lh.setUint16(10, 0, true);      // time 00:00
-      lh.setUint16(12, 0x21, true);   // date 1980-01-01
+      lh.setUint16(4, version, true);
+      lh.setUint16(6, 0x0800, true);            // UTF-8 names
+      lh.setUint16(8, 0, true);                 // method: store
+      lh.setUint16(10, 0, true);                // time 00:00
+      lh.setUint16(12, 0x21, true);             // date 1980-01-01
       lh.setUint32(14, crc, true);
-      lh.setUint32(18, size, true);
-      lh.setUint32(22, size, true);
+      lh.setUint32(18, bigSize ? U32 : size, true);
+      lh.setUint32(22, bigSize ? U32 : size, true);
       lh.setUint16(26, nameBytes.length, true);
-      body.push(lh.buffer, nameBytes, f.blob);
+      lh.setUint16(28, lhExtra.byteLength, true);
+      body.push(lh.buffer, nameBytes, lhExtra.buffer, f.blob);
 
+      // Zip64 extra in the central record carries only the fields that were
+      // masked to 0xFFFFFFFF, in spec order: size, compressed size, offset.
+      const cdExtraLen = (bigSize ? 16 : 0) + (bigOffset ? 8 : 0);
+      const cdExtra = new DataView(new ArrayBuffer(cdExtraLen ? cdExtraLen + 4 : 0));
+      if (cdExtraLen) {
+        cdExtra.setUint16(0, 0x0001, true);
+        cdExtra.setUint16(2, cdExtraLen, true);
+        let p = 4;
+        if (bigSize) { cdExtra.setBigUint64(p, BigInt(size), true); cdExtra.setBigUint64(p + 8, BigInt(size), true); p += 16; }
+        if (bigOffset) cdExtra.setBigUint64(p, BigInt(offset), true);
+      }
       const cd = new DataView(new ArrayBuffer(46));
       cd.setUint32(0, 0x02014b50, true);
-      cd.setUint16(4, 20, true);
-      cd.setUint16(6, 20, true);
+      cd.setUint16(4, version, true);
+      cd.setUint16(6, version, true);
       cd.setUint16(8, 0x0800, true);
       cd.setUint16(10, 0, true);
       cd.setUint16(12, 0, true);
       cd.setUint16(14, 0x21, true);
       cd.setUint32(16, crc, true);
-      cd.setUint32(20, size, true);
-      cd.setUint32(24, size, true);
+      cd.setUint32(20, bigSize ? U32 : size, true);
+      cd.setUint32(24, bigSize ? U32 : size, true);
       cd.setUint16(28, nameBytes.length, true);
-      cd.setUint32(42, offset, true); // relative offset of local header
-      central.push(cd.buffer, nameBytes);
+      cd.setUint16(30, cdExtra.byteLength, true);
+      cd.setUint32(42, bigOffset ? U32 : offset, true);
+      central.push(cd.buffer, nameBytes, cdExtra.buffer);
 
-      offset += 30 + nameBytes.length + size;
-      centralSize += 46 + nameBytes.length;
+      offset += 30 + nameBytes.length + lhExtra.byteLength + size;
+      centralSize += 46 + nameBytes.length + cdExtra.byteLength;
+    }
+
+    const tail = [];
+    if (files.length > 0xffff || offset > limit || centralSize > limit) {
+      const z64 = new DataView(new ArrayBuffer(56));
+      z64.setUint32(0, 0x06064b50, true);
+      z64.setBigUint64(4, 44n, true);           // size of this record - 12
+      z64.setUint16(12, 45, true);
+      z64.setUint16(14, 45, true);
+      z64.setBigUint64(24, BigInt(files.length), true);
+      z64.setBigUint64(32, BigInt(files.length), true);
+      z64.setBigUint64(40, BigInt(centralSize), true);
+      z64.setBigUint64(48, BigInt(offset), true);
+
+      const loc = new DataView(new ArrayBuffer(20));
+      loc.setUint32(0, 0x07064b50, true);
+      loc.setBigUint64(8, BigInt(offset + centralSize), true);
+      loc.setUint32(16, 1, true);
+      tail.push(z64.buffer, loc.buffer);
     }
 
     const eocd = new DataView(new ArrayBuffer(22));
     eocd.setUint32(0, 0x06054b50, true);
-    eocd.setUint16(8, files.length, true);
-    eocd.setUint16(10, files.length, true);
-    eocd.setUint32(12, centralSize, true);
-    eocd.setUint32(16, offset, true);
-    return new Blob([...body, ...central, eocd.buffer], { type: 'application/zip' });
+    eocd.setUint16(8, Math.min(files.length, 0xffff), true);
+    eocd.setUint16(10, Math.min(files.length, 0xffff), true);
+    eocd.setUint32(12, Math.min(centralSize, U32), true);
+    eocd.setUint32(16, Math.min(offset, U32), true);
+    tail.push(eocd.buffer);
+
+    return new Blob([...body, ...central, ...tail], { type: 'application/zip' });
   };
 
   const saveBlob = (blob, filename) => {
@@ -205,7 +255,8 @@
       state.seen.clear();
       if (!files.length) { reply(id, 'ack', { count: 0, bytes: 0 }); return; }
       try {
-        saveBlob(await buildZip(files), e.data.filename || 'alphafold_batch.zip');
+        const onProgress = (done, total) => window.postMessage({ __af: 'zipProgress', done, total }, '*');
+        saveBlob(await buildZip(files, onProgress), e.data.filename || 'alphafold.zip');
         reply(id, 'ack', { count: files.length, bytes });
       } catch (err) {
         reply(id, 'ack', { count: 0, bytes: 0, error: String(err && err.message || err) });

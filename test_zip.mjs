@@ -31,8 +31,8 @@ new Function(readFileSync('capture.js', 'utf8'))();
 
 // Hand the shim three files directly, then ask it to package them.
 const files = [
-  { name: 'fold_sin3a_1.json', body: '{"hello":"sin3a"}' },
-  { name: 'fold_sin3a_2.cif', body: 'data_x\nATOM 1 N\n'.repeat(500) },
+  { name: 'fold_p53_1.json', body: '{"hello":"p53"}' },
+  { name: 'fold_p53_2.cif', body: 'data_x\nATOM 1 N\n'.repeat(500) },
   { name: 'unicode_ß_名.txt', body: 'ok' }
 ];
 for (const f of files) {
@@ -47,30 +47,48 @@ globalThis.document.createElement = () => {
   return a;
 };
 
-const id = 'test1';
-let acked = null;
-listeners.push((e) => { if (e.data.__af === 'ack' && e.data.id === id) acked = e.data; });
-globalThis.window.postMessage({ __af: 'cmd', id, cmd: 'flush', filename: 'batch1.zip' });
-
-await new Promise((r) => setTimeout(r, 300));
-assert.ok(acked, 'flush never acked');
-assert.strictEqual(acked.error, undefined, 'flush errored: ' + acked.error);
-assert.strictEqual(acked.count, 3, 'wrong file count');
-assert.ok(saved && saved.name === 'batch1.zip', 'no zip was saved');
+async function flush(label) {
+  const id = 'flush-' + label;
+  let acked = null;
+  listeners.push((e) => { if (e.data.__af === 'ack' && e.data.id === id) acked = e.data; });
+  globalThis.window.postMessage({ __af: 'cmd', id, cmd: 'flush', filename: label + '.zip' });
+  await new Promise((r) => setTimeout(r, 300));
+  assert.ok(acked, label + ': flush never acked');
+  assert.strictEqual(acked.error, undefined, label + ': flush errored: ' + acked.error);
+  assert.strictEqual(acked.count, 3, label + ': wrong file count');
+  assert.ok(saved && saved.name === label + '.zip', label + ': no zip was saved');
+}
+await flush('zip32');
 
 const dir = mkdtempSync(join(tmpdir(), 'afzip-'));
-const zipPath = join(dir, 'batch1.zip');
-writeFileSync(zipPath, Buffer.from(await saved.blob.arrayBuffer()));
 
 // `unzip -t` validates CRCs, offsets and the central directory. Python's
 // zipfile then checks names+contents (macOS's Info-ZIP ignores the UTF-8 flag).
-execFileSync('unzip', ['-t', zipPath], { stdio: 'pipe' });
-const expected = JSON.stringify(Object.fromEntries(files.map((f) => [f.name, f.body])));
-const got = execFileSync('python3', ['-c', `
+const expected = Object.fromEntries(files.map((f) => [f.name, f.body]));
+
+async function verify(label) {
+  const zipPath = join(dir, label + '.zip');
+  writeFileSync(zipPath, Buffer.from(await saved.blob.arrayBuffer()));
+  execFileSync('unzip', ['-t', zipPath], { stdio: 'pipe' });
+  const got = execFileSync('python3', ['-c', `
 import json, sys, zipfile
 z = zipfile.ZipFile(sys.argv[1])
 assert z.testzip() is None
 print(json.dumps({i.filename: z.read(i).decode() for i in z.infolist()}))
 `, zipPath], { encoding: 'utf8' }).trim();
-assert.deepStrictEqual(JSON.parse(got), JSON.parse(expected), 'zip contents did not round-trip');
-console.log('zip self-check passed: 3 entries, CRCs valid, UTF-8 names and contents round-trip');
+  assert.deepStrictEqual(JSON.parse(got), expected, label + ': contents did not round-trip');
+}
+
+await verify('zip32');
+
+// Same files again, but with the zip64 threshold dropped to 100 bytes so the
+// 64-bit size/offset headers and the zip64 EOCD are actually exercised.
+globalThis.window.__afCap.zip64Limit = 100;
+for (const f of files) globalThis.window.__afCap.files.push({ name: f.name, blob: new Blob([f.body]) });
+await flush('zip64');
+await verify('zip64');
+const z64 = readFileSync(join(dir, 'zip64.zip'));
+assert.ok(z64.includes(Buffer.from([0x50, 0x4b, 0x06, 0x06])), 'zip64 EOCD record missing');
+assert.ok(z64.includes(Buffer.from([0x50, 0x4b, 0x06, 0x07])), 'zip64 EOCD locator missing');
+
+console.log('zip self-check passed: zip32 + zip64 archives, CRCs valid, UTF-8 names and contents round-trip');

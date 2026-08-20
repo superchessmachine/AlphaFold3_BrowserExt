@@ -163,18 +163,64 @@ function installAutomation() {
     );
   };
 
-  // Advance the Material paginator with the ▶ arrow. Returns false when the
-  // arrow is missing or already disabled (i.e. we are on the last page).
+  const isDisabled = (btn) => btn.disabled || btn.getAttribute('aria-disabled') === 'true'
+    || btn.classList.contains('mat-mdc-button-disabled')
+    || btn.classList.contains('mat-mdc-button-disabled-interactive');
+
+  // Every plausible "next page" arrow on the page, most specific first. There
+  // can be more than one paginator (e.g. a hidden one above the table), so the
+  // caller clicks the first ENABLED match rather than the first match.
+  const findNextPageButtons = () => {
+    const seen = new Set();
+    const out = [];
+    const add = (btn) => { if (btn && !seen.has(btn)) { seen.add(btn); out.push(btn); } };
+    document.querySelectorAll('button.mat-mdc-paginator-navigation-next, button.mat-paginator-navigation-next').forEach(add);
+    Array.from(document.querySelectorAll('button, a'))
+      .filter((b) => /^\s*next page\s*$/i.test(b.getAttribute('aria-label') || '' ))
+      .forEach(add);
+    document.querySelectorAll('mat-paginator, .mat-mdc-paginator').forEach((p) => {
+      Array.from(p.querySelectorAll('button'))
+        .filter((b) => /chevron_right|navigate_next|keyboard_arrow_right|arrow_forward/i.test(b.textContent || ''))
+        .forEach(add);
+    });
+    return out;
+  };
+
+  // Advance the Material paginator with the ▶ arrow. Returns false when no
+  // enabled arrow exists (i.e. we are on the last page, or there is no paginator).
   const clickNextPage = async (delayMs) => {
-    const next = document.querySelector('button.mat-mdc-paginator-navigation-next');
+    const candidates = findNextPageButtons();
+    if (!candidates.length) {
+      if (!window.__afNoPaginatorWarned) {
+        window.__afNoPaginatorWarned = true;
+        overlay.log('No paginator ▶ arrow found on this page.', 'warn');
+      }
+      return false;
+    }
+    const next = candidates.find((b) => !isDisabled(b));
     if (!next) return false;
-    const disabled = next.disabled || next.getAttribute('aria-disabled') === 'true'
-      || next.classList.contains('mat-mdc-button-disabled')
-      || next.classList.contains('mat-mdc-button-disabled-interactive');
-    if (disabled) return false;
     overlay.log('Next page…');
     next.click();
     await wait(delayMs);
+    return true;
+  };
+
+  // Bump the paginator to 100 rows/page. Returns true only if it actually
+  // changed, so callers can re-check the table.
+  const setPageSizeTo100 = async (menuDelayMs, settleMs) => {
+    const paginator = document.querySelector('mat-paginator, .mat-mdc-paginator');
+    if (!paginator || normalize(paginator.textContent).includes('items per page: 100')) return false;
+    const trigger = paginator.querySelector('.mat-mdc-select-trigger')
+      || paginator.querySelector('mat-select') || paginator.querySelector('[role="combobox"]');
+    if (!trigger) return false;
+    overlay.log('Showing 100 rows per page…');
+    trigger.click();
+    await wait(menuDelayMs);
+    const option = Array.from(document.querySelectorAll('mat-option, .mat-mdc-option'))
+      .find((o) => normalize(o.textContent) === '100');
+    if (!option) { closeAnyMenu(); return false; }
+    option.click();
+    await wait(settleMs);
     return true;
   };
 
@@ -214,6 +260,8 @@ function installAutomation() {
   // triggered, scrolling to reveal more rows when the visible ones run out.
   // Already-downloaded job names are remembered for the page session so a
   // rerun continues with the next batch instead of repeating the top rows.
+  // Everything captured in one run goes into a single ZIP (zip64, so size is
+  // not a limit) — one Chrome download approval for the whole job.
   // If desiredDownloads is omitted/invalid it falls back to downloading every
   // row it can reach (revealing more by scrolling until nothing new loads).
   // -------------------------------------------------------------------------
@@ -233,9 +281,8 @@ function installAutomation() {
     const titleNeedle = normalize(titleFilter);
     const matchesFilter = (name) => !titleNeedle || normalize(name).includes(titleNeedle);
 
-    // Bundle each batch into one ZIP instead of firing one download per row.
+    // Bundle the whole run into ONE ZIP instead of firing one download per row.
     let bundle = params.bundle !== false;
-    const batchSize = Number(params.batchSize) > 0 ? Number(params.batchSize) : 25;
 
     if (window.__afAuto.busy) { overlay.log('Already running — please wait.', 'warn'); return { busy: true }; }
     if (!document.querySelectorAll('tr.mat-mdc-row').length) { overlay.error('No prediction rows found on the page.'); return { triggered: 0 }; }
@@ -254,21 +301,27 @@ function installAutomation() {
         clearTimeout(timer);
         resolve(event.data);
       };
-      const timer = setTimeout(() => { window.removeEventListener('message', onMessage); resolve(null); }, 180000);
+      const timer = setTimeout(() => { window.removeEventListener('message', onMessage); resolve(null); }, 1800000);
       window.addEventListener('message', onMessage);
       window.postMessage(Object.assign({ __af: 'cmd', id }, msg), '*');
     });
 
-    let batchIndex = 0;
-    const zipBaseName = (titleFilter || 'alphafold').replace(/[^\w.-]+/g, '_');
-    const flushBatch = async () => {
-      batchIndex += 1;
-      const filename = `${zipBaseName}_batch${batchIndex}.zip`;
-      overlay.log(`Packaging batch ${batchIndex} → ${filename}…`);
-      const res = await capSend({ cmd: 'flush', filename });
+    const zipName = ((titleFilter || 'alphafold').replace(/[^\w.-]+/g, '_')) + '.zip';
+    if (!window.__afZipProgressHooked) {
+      window.__afZipProgressHooked = true;
+      window.addEventListener('message', (event) => {
+        if (event.source === window && event.data && event.data.__af === 'zipProgress') {
+          overlay.count(`Zipping ${event.data.done} / ${event.data.total}`);
+          overlay.progress(event.data.done, event.data.total);
+        }
+      });
+    }
+    const flushArchive = async () => {
+      overlay.log(`Packaging everything into ${zipName} — this can take a while for a big run…`);
+      const res = await capSend({ cmd: 'flush', filename: zipName });
       if (!res || res.error) { overlay.log(`Packaging failed: ${res ? res.error : 'timed out'}`, 'err'); return 0; }
-      if (!res.count) { batchIndex -= 1; return 0; }
-      overlay.log(`Saved ${filename} (${res.count} file(s), ${(res.bytes / 1048576).toFixed(1)} MB).`, 'ok');
+      if (!res.count) return 0;
+      overlay.log(`Saved ${zipName} (${res.count} file(s), ${(res.bytes / 1073741824).toFixed(2)} GB).`, 'ok');
       return res.count;
     };
 
@@ -335,21 +388,23 @@ function installAutomation() {
     if (bundle) {
       const armed = await capSend({ cmd: 'arm', on: true });
       if (!armed) { bundle = false; overlay.log('Capture shim not responding — falling back to one download per row.', 'warn'); }
-      else overlay.log(`Bundling into ZIPs of ${batchSize}.`);
+      else overlay.log('Bundling the whole run into one ZIP.');
     }
 
     try {
       let triggered = 0;
-      let sinceFlush = 0;
       let idleCycles = 0;
+      let pageSizeExpanded = false;
 
       while (!limited || triggered < desired) {
         if (window.__afAutoStop) { overlay.log('Stopped by user.', 'warn'); break; }
 
         const selection = nextEligibleRow();
         if (!selection) {
-          // Nothing left on this page: try the paginator's ▶ arrow first (it is
-          // instant), then fall back to scrolling for virtual-scroll tables.
+          // Nothing left on this page: show 100 rows at a time, then walk pages
+          // with the ▶ arrow, and only then fall back to scrolling for
+          // virtual-scroll tables.
+          if (!pageSizeExpanded) { pageSizeExpanded = true; if (await setPageSizeTo100(config.menuDelayMs, config.idleDelayMs)) { idleCycles = 0; continue; } }
           if (await clickNextPage(config.idleDelayMs)) { idleCycles = 0; continue; }
           idleCycles += 1;
           if (idleCycles > config.maxIdleCycles) { overlay.log('No more predictions to download. Stopping.', 'warn'); break; }
@@ -384,7 +439,6 @@ function installAutomation() {
 
         downloadItem.click();
         triggered += 1;
-        sinceFlush += 1;
         logged.add(key);
         if (!key.startsWith('__row:')) newlyLogged.push(key);
         overlay.log(`Downloaded ${key} (${triggered}${limited ? '/' + desired : ''}).`, 'ok');
@@ -408,17 +462,16 @@ function installAutomation() {
               overlay.log('Could not intercept the download — continuing without ZIP packaging.', 'warn');
             }
           }
-          if (bundle && sinceFlush >= batchSize) { await flushBatch(); sinceFlush = 0; }
         }
       }
 
-      if (bundle && sinceFlush > 0) await flushBatch();
-      if (bundle) await capSend({ cmd: 'arm', on: false });
+      let packaged = 0;
+      if (bundle) { packaged = await flushArchive(); await capSend({ cmd: 'arm', on: false }); }
       await saveLog();
 
       if (limited) overlay.progress(triggered, desired);
-      overlay.done(`Finished. Triggered ${triggered} download(s)${bundle ? ` in ${batchIndex} ZIP file(s)` : ''}.`);
-      return { triggered, batches: batchIndex };
+      overlay.done(`Finished. Triggered ${triggered} download(s)${bundle ? ` — ${packaged} of them packaged into ${zipName}` : ''}.`);
+      return { triggered, packaged };
     } finally {
       if (bundle) capSend({ cmd: 'arm', on: false });
       await saveLog();
@@ -464,23 +517,6 @@ function installAutomation() {
     };
 
     const matchesFilter = (name) => normalize(name).includes(titleNeedle);
-
-    const setPageSizeTo100 = async () => {
-      const paginator = document.querySelector('mat-paginator');
-      if (!paginator || normalize(paginator.textContent).includes('100')) return false;
-      const trigger = paginator.querySelector('.mat-mdc-select-trigger')
-        || paginator.querySelector('mat-select') || paginator.querySelector('[role="combobox"]');
-      if (!trigger) return false;
-      overlay.log('Showing 100 rows per page...');
-      trigger.click();
-      await wait(config.menuDelayMs);
-      const option = Array.from(document.querySelectorAll('mat-option, .mat-mdc-option'))
-        .find((o) => normalize(o.textContent) === '100');
-      if (!option) { closeAnyMenu(); return false; }
-      option.click();
-      await wait(config.pageDelayMs);
-      return true;
-    };
 
     const deletedNames = [];
     const skippedNames = new Set();
@@ -540,7 +576,7 @@ function installAutomation() {
           continue;
         }
 
-        if (!pageSizeExpanded) { pageSizeExpanded = true; if (await setPageSizeTo100()) continue; }
+        if (!pageSizeExpanded) { pageSizeExpanded = true; if (await setPageSizeTo100(config.menuDelayMs, config.pageDelayMs)) continue; }
         if (await clickNextPage(config.pageDelayMs)) continue;
         break;
       }
@@ -681,26 +717,6 @@ function installAutomation() {
       }
     };
 
-    // ---- pagination: bump to 100/page, then walk pages, so the filter keeps
-    // looking past the first screen of rows before giving up. ----
-    const setPageSizeTo100 = async () => {
-      const paginator = document.querySelector('mat-paginator');
-      if (!paginator) return false;
-      if (normalize(paginator.textContent).includes('100')) return true;
-      const trigger = paginator.querySelector('.mat-mdc-select-trigger')
-        || paginator.querySelector('mat-select') || paginator.querySelector('[role="combobox"]');
-      if (!trigger) return false;
-      overlay.log('Showing 100 rows per page…');
-      trigger.click();
-      await wait(config.menuDelayMs);
-      const option = Array.from(document.querySelectorAll('mat-option, .mat-mdc-option'))
-        .find((o) => normalize(o.textContent) === '100');
-      if (!option) { closeAnyMenu(); return false; }
-      option.click();
-      await wait(config.idleDelayMs);
-      return true;
-    };
-
     try {
       let started = 0;
       const failureCounts = new Map();
@@ -724,7 +740,7 @@ function installAutomation() {
         const selection = nextEligibleRow();
         if (!selection) {
           // Out of matching rows on this page — reveal more before giving up.
-          if (!pageSizeExpanded) { pageSizeExpanded = true; if (await setPageSizeTo100()) continue; }
+          if (!pageSizeExpanded) { pageSizeExpanded = true; if (await setPageSizeTo100(config.menuDelayMs, config.pageDelayMs)) continue; }
           if (await clickNextPage(config.idleDelayMs)) continue;
           overlay.log('No more pages / eligible drafts. Stopping.', 'warn');
           break;

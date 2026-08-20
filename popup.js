@@ -81,13 +81,11 @@ $('downloadAll').addEventListener('click', () => {
   const desiredDownloads = parseInt($('dlCount').value, 10);
   if (!Number.isFinite(desiredDownloads) || desiredDownloads <= 0) { setStatus('Enter how many predictions to download (1 or more).', 'err'); return; }
   const delayMs = parseInt($('dlDelay').value, 10);
-  const batchSize = parseInt($('dlBatch').value, 10);
   trigger('downloadAll', {
     desiredDownloads,
     delayMs: Number.isFinite(delayMs) ? delayMs : 500,
     titleFilter: $('dlFilter').value.trim(),
-    bundle: $('dlBundle').checked,
-    batchSize: Number.isFinite(batchSize) && batchSize > 0 ? batchSize : 25
+    bundle: $('dlBundle').checked
   }, ['capture.js']);
 });
 
