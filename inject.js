@@ -163,6 +163,21 @@ function installAutomation() {
     );
   };
 
+  // Advance the Material paginator with the ▶ arrow. Returns false when the
+  // arrow is missing or already disabled (i.e. we are on the last page).
+  const clickNextPage = async (delayMs) => {
+    const next = document.querySelector('button.mat-mdc-paginator-navigation-next');
+    if (!next) return false;
+    const disabled = next.disabled || next.getAttribute('aria-disabled') === 'true'
+      || next.classList.contains('mat-mdc-button-disabled')
+      || next.classList.contains('mat-mdc-button-disabled-interactive');
+    if (disabled) return false;
+    overlay.log('Next page…');
+    next.click();
+    await wait(delayMs);
+    return true;
+  };
+
   // Read a chip's visible label only — chip.textContent also includes the icon
   // ligature text (e.g. "edit_document"), so match on the label span instead.
   const chipLabel = (chip) => {
@@ -205,12 +220,22 @@ function installAutomation() {
   async function downloadAll(params) {
     params = params || {};
     const config = Object.assign({
-      menuDelayMs: 500, idleDelayMs: 1500, maxIdleCycles: 3, rowRetryLimit: 2
+      menuDelayMs: 500, idleDelayMs: 1500, maxIdleCycles: 3, rowRetryLimit: 2,
+      captureWaitMs: 12000
     }, params.options || {});
     const delayMs = Number(params.delayMs) > 0 ? Number(params.delayMs) : 500;
 
     const desired = Number(params.desiredDownloads);
     const limited = Number.isFinite(desired) && desired > 0;
+
+    // Only download rows whose title contains this text (case-insensitive).
+    const titleFilter = (params.titleFilter || '').trim();
+    const titleNeedle = normalize(titleFilter);
+    const matchesFilter = (name) => !titleNeedle || normalize(name).includes(titleNeedle);
+
+    // Bundle each batch into one ZIP instead of firing one download per row.
+    let bundle = params.bundle !== false;
+    const batchSize = Number(params.batchSize) > 0 ? Number(params.batchSize) : 25;
 
     if (window.__afAuto.busy) { overlay.log('Already running — please wait.', 'warn'); return { busy: true }; }
     if (!document.querySelectorAll('tr.mat-mdc-row').length) { overlay.error('No prediction rows found on the page.'); return { triggered: 0 }; }
@@ -218,13 +243,53 @@ function installAutomation() {
     window.__afAuto.busy = true;
     window.__afAutoStop = false;
     overlay.start(limited ? `Downloading ${desired} prediction(s)` : 'Downloading predictions');
+    if (titleNeedle) overlay.log(`Only downloading titles containing "${titleFilter}".`);
 
-    // Persistent set of job names downloaded this page session so reruns skip them.
-    if (!(window.__afDownloadedPredictions instanceof Set)) {
-      const existing = window.__afDownloadedPredictions;
-      window.__afDownloadedPredictions = Array.isArray(existing) ? new Set(existing) : new Set();
+    // ---- talk to the MAIN-world capture shim (capture.js) ----
+    const capSend = (msg) => new Promise((resolve) => {
+      const id = 'af' + Math.random().toString(36).slice(2);
+      const onMessage = (event) => {
+        if (event.source !== window || !event.data || event.data.__af !== 'ack' || event.data.id !== id) return;
+        window.removeEventListener('message', onMessage);
+        clearTimeout(timer);
+        resolve(event.data);
+      };
+      const timer = setTimeout(() => { window.removeEventListener('message', onMessage); resolve(null); }, 180000);
+      window.addEventListener('message', onMessage);
+      window.postMessage(Object.assign({ __af: 'cmd', id }, msg), '*');
+    });
+
+    let batchIndex = 0;
+    const zipBaseName = (titleFilter || 'alphafold').replace(/[^\w.-]+/g, '_');
+    const flushBatch = async () => {
+      batchIndex += 1;
+      const filename = `${zipBaseName}_batch${batchIndex}.zip`;
+      overlay.log(`Packaging batch ${batchIndex} → ${filename}…`);
+      const res = await capSend({ cmd: 'flush', filename });
+      if (!res || res.error) { overlay.log(`Packaging failed: ${res ? res.error : 'timed out'}`, 'err'); return 0; }
+      if (!res.count) { batchIndex -= 1; return 0; }
+      overlay.log(`Saved ${filename} (${res.count} file(s), ${(res.bytes / 1048576).toFixed(1)} MB).`, 'ok');
+      return res.count;
+    };
+
+    // ---- persistent download log (survives reloads and incognito windows) ----
+    const LOG_KEY = 'downloadedPredictions';
+    const hasStorage = typeof chrome !== 'undefined' && chrome.storage && chrome.storage.local;
+    let logged;
+    if (hasStorage) {
+      const stored = await chrome.storage.local.get(LOG_KEY);
+      logged = new Set(stored[LOG_KEY] || []);
+      overlay.log(`Log has ${logged.size} previously downloaded prediction(s) — those are skipped.`);
+    } else {
+      if (!(window.__afDownloadedPredictions instanceof Set)) window.__afDownloadedPredictions = new Set();
+      logged = window.__afDownloadedPredictions;
     }
-    const downloadedNames = window.__afDownloadedPredictions;
+    const newlyLogged = [];
+    const saveLog = async () => {
+      if (!hasStorage || !newlyLogged.length) return;
+      await chrome.storage.local.set({ [LOG_KEY]: Array.from(logged) });
+    };
+
     const failureCounts = new Map();
 
     const rowKey = (row) => {
@@ -237,7 +302,8 @@ function installAutomation() {
       const rows = Array.from(document.querySelectorAll('tr.mat-mdc-row'));
       for (const row of rows) {
         const key = rowKey(row);
-        if (downloadedNames.has(key)) continue;
+        if (logged.has(key)) continue;
+        if (!matchesFilter(key)) continue;
         if ((failureCounts.get(key) || 0) >= config.rowRetryLimit) continue;
         return { row, key };
       }
@@ -266,8 +332,15 @@ function installAutomation() {
       await wait(config.idleDelayMs);
     };
 
+    if (bundle) {
+      const armed = await capSend({ cmd: 'arm', on: true });
+      if (!armed) { bundle = false; overlay.log('Capture shim not responding — falling back to one download per row.', 'warn'); }
+      else overlay.log(`Bundling into ZIPs of ${batchSize}.`);
+    }
+
     try {
       let triggered = 0;
+      let sinceFlush = 0;
       let idleCycles = 0;
 
       while (!limited || triggered < desired) {
@@ -275,6 +348,9 @@ function installAutomation() {
 
         const selection = nextEligibleRow();
         if (!selection) {
+          // Nothing left on this page: try the paginator's ▶ arrow first (it is
+          // instant), then fall back to scrolling for virtual-scroll tables.
+          if (await clickNextPage(config.idleDelayMs)) { idleCycles = 0; continue; }
           idleCycles += 1;
           if (idleCycles > config.maxIdleCycles) { overlay.log('No more predictions to download. Stopping.', 'warn'); break; }
           overlay.log('No new rows visible — scrolling to reveal more…', 'warn');
@@ -298,24 +374,54 @@ function installAutomation() {
 
         const items = Array.from(document.querySelectorAll('span.mat-mdc-menu-item-text'));
         const downloadItem = items.find((el) => el.textContent.trim() === 'Download');
-        if (downloadItem) {
-          downloadItem.click();
-          triggered += 1;
-          downloadedNames.add(key);
-          overlay.log(`Downloaded ${key} (${triggered}${limited ? '/' + desired : ''}).`, 'ok');
-          if (limited) overlay.progress(triggered, desired);
-        } else {
+        if (!downloadItem) {
           overlay.log(`${key}: "Download" not found.`, 'warn');
           failureCounts.set(key, (failureCounts.get(key) || 0) + 1);
           closeAnyMenu();
+          await wait(delayMs);
+          continue;
         }
+
+        downloadItem.click();
+        triggered += 1;
+        sinceFlush += 1;
+        logged.add(key);
+        if (!key.startsWith('__row:')) newlyLogged.push(key);
+        overlay.log(`Downloaded ${key} (${triggered}${limited ? '/' + desired : ''}).`, 'ok');
+        if (limited) overlay.progress(triggered, desired);
         await wait(delayMs);
+
+        if (bundle) {
+          // First row is the canary: if nothing was captured the page must use a
+          // download path we do not hook, so stop pretending and let it through.
+          if (triggered === 1) {
+            const deadline = performance.now() + config.captureWaitMs;
+            let seen = 0;
+            while (performance.now() < deadline) {
+              const status = await capSend({ cmd: 'status' });
+              if (status && (status.count > 0 || status.pending > 0)) { seen = 1; break; }
+              await wait(400);
+            }
+            if (!seen) {
+              bundle = false;
+              await capSend({ cmd: 'arm', on: false });
+              overlay.log('Could not intercept the download — continuing without ZIP packaging.', 'warn');
+            }
+          }
+          if (bundle && sinceFlush >= batchSize) { await flushBatch(); sinceFlush = 0; }
+        }
       }
 
+      if (bundle && sinceFlush > 0) await flushBatch();
+      if (bundle) await capSend({ cmd: 'arm', on: false });
+      await saveLog();
+
       if (limited) overlay.progress(triggered, desired);
-      overlay.done(`Finished. Triggered ${triggered} download(s).`);
-      return { triggered };
+      overlay.done(`Finished. Triggered ${triggered} download(s)${bundle ? ` in ${batchIndex} ZIP file(s)` : ''}.`);
+      return { triggered, batches: batchIndex };
     } finally {
+      if (bundle) capSend({ cmd: 'arm', on: false });
+      await saveLog();
       window.__afAuto.busy = false;
     }
   }
@@ -372,19 +478,6 @@ function installAutomation() {
         .find((o) => normalize(o.textContent) === '100');
       if (!option) { closeAnyMenu(); return false; }
       option.click();
-      await wait(config.pageDelayMs);
-      return true;
-    };
-
-    const clickNextPage = async () => {
-      const next = document.querySelector('button.mat-mdc-paginator-navigation-next');
-      if (!next) return false;
-      const disabled = next.disabled || next.getAttribute('aria-disabled') === 'true'
-        || next.classList.contains('mat-mdc-button-disabled')
-        || next.classList.contains('mat-mdc-button-disabled-interactive');
-      if (disabled) return false;
-      overlay.log('Next page...');
-      next.click();
       await wait(config.pageDelayMs);
       return true;
     };
@@ -448,7 +541,7 @@ function installAutomation() {
         }
 
         if (!pageSizeExpanded) { pageSizeExpanded = true; if (await setPageSizeTo100()) continue; }
-        if (await clickNextPage()) continue;
+        if (await clickNextPage(config.pageDelayMs)) continue;
         break;
       }
 
@@ -608,19 +701,6 @@ function installAutomation() {
       return true;
     };
 
-    const clickNextPage = async () => {
-      const next = document.querySelector('button.mat-mdc-paginator-navigation-next');
-      if (!next) return false;
-      const disabled = next.disabled || next.getAttribute('aria-disabled') === 'true'
-        || next.classList.contains('mat-mdc-button-disabled')
-        || next.classList.contains('mat-mdc-button-disabled-interactive');
-      if (disabled) return false;
-      overlay.log('Next page…');
-      next.click();
-      await wait(config.idleDelayMs);
-      return true;
-    };
-
     try {
       let started = 0;
       const failureCounts = new Map();
@@ -645,7 +725,7 @@ function installAutomation() {
         if (!selection) {
           // Out of matching rows on this page — reveal more before giving up.
           if (!pageSizeExpanded) { pageSizeExpanded = true; if (await setPageSizeTo100()) continue; }
-          if (await clickNextPage()) continue;
+          if (await clickNextPage(config.idleDelayMs)) continue;
           overlay.log('No more pages / eligible drafts. Stopping.', 'warn');
           break;
         }

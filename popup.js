@@ -17,7 +17,7 @@ const RESTRICTED = /^(chrome|edge|brave|about|chrome-extension|devtools|view-sou
 
 // Install the automation bundle, then invoke one of its methods. The injected
 // method keeps running in the page even after this popup closes.
-async function trigger(method, params) {
+async function trigger(method, params, mainFiles) {
   const tab = await getActiveTab();
   if (!tab || !tab.id) { setStatus('No active tab found.', 'err'); return; }
   if (RESTRICTED.test(tab.url || '')) {
@@ -28,6 +28,8 @@ async function trigger(method, params) {
   try {
     // 1) Ensure the automation is installed (idempotent).
     await chrome.scripting.executeScript({ target: { tabId: tab.id }, func: installAutomation });
+    // 1b) Some actions also need the MAIN-world download interceptor.
+    if (mainFiles) await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: mainFiles, world: 'MAIN' });
   } catch (e) {
     setStatus('Could not access this page: ' + e.message, 'err');
     return;
@@ -61,11 +63,32 @@ $('deleteDrafts').addEventListener('click', () => {
   trigger('deleteDrafts', { titleFilter });
 });
 
+const LOG_KEY = 'downloadedPredictions';
+
+async function refreshLogCount() {
+  const { [LOG_KEY]: names = [] } = await chrome.storage.local.get(LOG_KEY);
+  $('dlLogCount').textContent = `Log: ${names.length} already downloaded (skipped)`;
+}
+refreshLogCount();
+
+$('clearLog').addEventListener('click', async () => {
+  await chrome.storage.local.remove(LOG_KEY);
+  await refreshLogCount();
+  setStatus('Download log cleared — everything is downloadable again.', 'ok');
+});
+
 $('downloadAll').addEventListener('click', () => {
   const desiredDownloads = parseInt($('dlCount').value, 10);
   if (!Number.isFinite(desiredDownloads) || desiredDownloads <= 0) { setStatus('Enter how many predictions to download (1 or more).', 'err'); return; }
   const delayMs = parseInt($('dlDelay').value, 10);
-  trigger('downloadAll', { desiredDownloads, delayMs: Number.isFinite(delayMs) ? delayMs : 500 });
+  const batchSize = parseInt($('dlBatch').value, 10);
+  trigger('downloadAll', {
+    desiredDownloads,
+    delayMs: Number.isFinite(delayMs) ? delayMs : 500,
+    titleFilter: $('dlFilter').value.trim(),
+    bundle: $('dlBundle').checked,
+    batchSize: Number.isFinite(batchSize) && batchSize > 0 ? batchSize : 25
+  }, ['capture.js']);
 });
 
 $('openGenerator').addEventListener('click', () => {

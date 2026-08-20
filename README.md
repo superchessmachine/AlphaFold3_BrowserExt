@@ -56,11 +56,29 @@ to `chrome://extensions` and click the **↻ reload** icon on the extension card
      again later to keep chewing through the queue without repeats.
 4. **Delete saved drafts** — enter title text and click **Delete**. It switches
    the table to **Saved draft** only, then deletes matching draft rows.
-5. **Download predictions** — enter how many to download and click **Download**.
-   It opens each row's ⋮ menu, clicks **Download**, and **scrolls to reveal more
-   rows when it can't see enough** — just like the run buttons. Downloaded jobs
-   are remembered for the tab session, so click again to grab the next batch.
-   Raise the *Advanced timing* delay (default 500 ms) on a slow connection.
+5. **Download predictions** — the big one. Options:
+   - **Title contains** — e.g. `Sin3A`. Only rows whose name contains that text
+     are downloaded; everything else is walked past.
+   - **How many** — the target count. It pages forward with the paginator's
+     **▶ arrow** (and falls back to scrolling for virtual-scroll tables), so the
+     matches do not have to be on the first page.
+   - **Log** — every prediction it downloads is written to `chrome.storage`, so
+     it never downloads the same one twice, even after a reload, a new window,
+     or a new day. The popup shows how many are in the log; **Clear log** wipes
+     it if you want to re-download.
+   - **Package each batch into one ZIP** — instead of firing one download per
+     row (and having Chrome ask you to approve 100 of them), the extension
+     intercepts each file, keeps it in memory, and saves one ZIP per *Files per
+     ZIP* rows. One download per batch, so **incognito works too** — incognito
+     never remembers a per-site "allow multiple downloads" answer, which is why
+     the plain click-per-row approach is painful there. Make sure the extension
+     is allowed in incognito: `chrome://extensions` → the card's **Details** →
+     **Allow in Incognito**.
+     If the page turns out to use a download path the interceptor cannot hook,
+     it says so in the progress panel and falls back to plain per-row downloads
+     rather than losing files.
+   - Raise the *Advanced timing* delay (default 500 ms) on a slow connection.
+
 6. Watch the progress panel on the page. Use **Stop** to cancel.
 
 ### Generate screening JSON
