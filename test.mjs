@@ -1,5 +1,6 @@
-/* test_zip.mjs — self-check for capture.js's store-only ZIP writer.
-   Run: node test_zip.mjs   (needs `unzip` on PATH)                          */
+/* test.mjs — self-checks for the two bits of non-obvious logic:
+   capture.js's ZIP writer, and inject.js's paginator disabled-state test.
+   Run: node test.mjs   (needs `unzip` and `python3` on PATH)                */
 import { readFileSync, writeFileSync, mkdtempSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
@@ -92,3 +93,33 @@ assert.ok(z64.includes(Buffer.from([0x50, 0x4b, 0x06, 0x06])), 'zip64 EOCD recor
 assert.ok(z64.includes(Buffer.from([0x50, 0x4b, 0x06, 0x07])), 'zip64 EOCD locator missing');
 
 console.log('zip self-check passed: zip32 + zip64 archives, CRCs valid, UTF-8 names and contents round-trip');
+
+// ---------------------------------------------------------------------------
+// isDisabled — pulled straight out of inject.js so the check cannot drift from
+// the implementation. Material's `disabledInteractive` buttons keep the
+// `mat-mdc-button-disabled-interactive` class while ENABLED and signal their
+// real state via aria-disabled; reading the class as "disabled" is what made
+// the paginator look dead and stopped downloads after one page.
+// ---------------------------------------------------------------------------
+const injectSrc = readFileSync('inject.js', 'utf8');
+const fnSrc = injectSrc.match(/const isDisabled = \(btn\) =>[\s\S]*?;\n/);
+assert.ok(fnSrc, 'could not find isDisabled in inject.js');
+const isDisabled = new Function('return ' + fnSrc[0].replace(/^const isDisabled = /, '').replace(/;\n$/, ''))();
+
+const el = (classes, attrs = {}, disabled = false) => ({
+  classList: { contains: (c) => classes.includes(c) },
+  getAttribute: (n) => (n in attrs ? attrs[n] : null),
+  disabled
+});
+
+const NEXT = ['mdc-icon-button', 'mat-mdc-icon-button', 'mat-mdc-paginator-navigation-next', 'mat-mdc-button-disabled-interactive'];
+assert.strictEqual(isDisabled(el(NEXT, { 'aria-label': 'Next page' })), false,
+  'live disabledInteractive arrow must read as ENABLED');
+assert.strictEqual(isDisabled(el(NEXT, { 'aria-label': 'Next page', 'aria-disabled': 'true' })), true,
+  'last-page disabledInteractive arrow must read as disabled');
+assert.strictEqual(isDisabled(el(['mat-mdc-icon-button', 'mat-mdc-button-disabled'], {}, true)), true,
+  'ordinary disabled button must read as disabled');
+assert.strictEqual(isDisabled(el(['mat-mdc-icon-button'], { 'aria-label': 'Next page' })), false,
+  'ordinary enabled button must read as enabled');
+
+console.log('paginator self-check passed: disabledInteractive arrows are followed, real disabled ones are not');

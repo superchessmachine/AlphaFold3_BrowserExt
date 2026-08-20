@@ -163,9 +163,14 @@ function installAutomation() {
     );
   };
 
-  const isDisabled = (btn) => btn.disabled || btn.getAttribute('aria-disabled') === 'true'
+  // NOTE: `mat-mdc-button-disabled-interactive` is NOT a disabled state — it
+  // marks a button that stays focusable while disabled, and Material leaves the
+  // class on even when the button is live. Those buttons report their real
+  // state through aria-disabled only (btn.disabled stays false), so that is the
+  // signal to trust.
+  const isDisabled = (btn) => btn.getAttribute('aria-disabled') === 'true'
     || btn.classList.contains('mat-mdc-button-disabled')
-    || btn.classList.contains('mat-mdc-button-disabled-interactive');
+    || (btn.disabled && !btn.classList.contains('mat-mdc-button-disabled-interactive'));
 
   // Every plausible "next page" arrow on the page, most specific first. There
   // can be more than one paginator (e.g. a hidden one above the table), so the
@@ -269,7 +274,7 @@ function installAutomation() {
     params = params || {};
     const config = Object.assign({
       menuDelayMs: 500, idleDelayMs: 1500, maxIdleCycles: 3, rowRetryLimit: 2,
-      captureWaitMs: 12000
+      captureWaitMs: 12000, maxEmptyPages: 50
     }, params.options || {});
     const delayMs = Number(params.delayMs) > 0 ? Number(params.delayMs) : 500;
 
@@ -394,6 +399,7 @@ function installAutomation() {
     try {
       let triggered = 0;
       let idleCycles = 0;
+      let emptyPages = 0;
       let pageSizeExpanded = false;
 
       while (!limited || triggered < desired) {
@@ -405,7 +411,10 @@ function installAutomation() {
           // with the ▶ arrow, and only then fall back to scrolling for
           // virtual-scroll tables.
           if (!pageSizeExpanded) { pageSizeExpanded = true; if (await setPageSizeTo100(config.menuDelayMs, config.idleDelayMs)) { idleCycles = 0; continue; } }
-          if (await clickNextPage(config.idleDelayMs)) { idleCycles = 0; continue; }
+          // ponytail: bail after maxEmptyPages fruitless advances so a paginator
+          // that never reports "last page" cannot spin forever. Raise it if you
+          // ever filter for something that only appears very deep in the list.
+          if (emptyPages < config.maxEmptyPages && await clickNextPage(config.idleDelayMs)) { emptyPages += 1; idleCycles = 0; continue; }
           idleCycles += 1;
           if (idleCycles > config.maxIdleCycles) { overlay.log('No more predictions to download. Stopping.', 'warn'); break; }
           overlay.log('No new rows visible — scrolling to reveal more…', 'warn');
@@ -439,6 +448,7 @@ function installAutomation() {
 
         downloadItem.click();
         triggered += 1;
+        emptyPages = 0;
         logged.add(key);
         if (!key.startsWith('__row:')) newlyLogged.push(key);
         overlay.log(`Downloaded ${key} (${triggered}${limited ? '/' + desired : ''}).`, 'ok');

@@ -136,3 +136,16 @@ icons/            Toolbar icons (16/48/128 px)
 - **Downloads/submissions get skipped** — increase the delay (start runs: the
   *Advanced timing* delay; downloads: the delay field). 750–1000 ms is safe on
   slower machines.
+
+---
+
+## Self-checks
+
+```bash
+node test.mjs
+```
+
+Covers the two pieces of logic that are easy to get subtly wrong: the ZIP
+writer (both the zip32 and zip64 paths, verified with `unzip -t` and Python's
+`zipfile`) and the paginator's disabled-state test, which decides whether the
+▶ arrow gets clicked.
