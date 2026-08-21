@@ -26,7 +26,7 @@
 
   const state = {
     armed: false, mode: 'memory', files: [], bytes: 0, pending: 0,
-    seen: new Set(), failed: [], zip64Limit: U32
+    seen: new Set(), seenUrls: new Set(), skipped: 0, failed: [], zip64Limit: U32
   };
   window.__afCap = state; // exposed for debugging / the self-check
 
@@ -245,6 +245,14 @@
   // Start the fetch in the SAME tick as the click — pages routinely call
   // URL.revokeObjectURL() right after, which would kill a deferred fetch.
   const capture = (url, name) => {
+    // A blob:/data: URL identifies its bytes exactly (createObjectURL never
+    // reuses a UUID), so seeing one twice means the page was asked for the same
+    // file twice — archive it once. http(s) URLs are NOT deduped: a site can
+    // legitimately serve every row from one endpoint.
+    if (/^blob:|^data:/.test(url)) {
+      if (state.seenUrls.has(url)) { state.skipped += 1; return; }
+      state.seenUrls.add(url);
+    }
     state.pending += 1;
     fetch(url, { credentials: 'include' })
       .then((r) => (r.ok ? r.blob() : Promise.reject(new Error('HTTP ' + r.status))))
@@ -307,7 +315,7 @@
 
     if (cmd === 'arm') {
       state.armed = !!e.data.on;
-      if (state.armed) { state.seen.clear(); state.failed.length = 0; state.bytes = 0; }
+      if (state.armed) { state.seen.clear(); state.seenUrls.clear(); state.skipped = 0; state.failed.length = 0; state.bytes = 0; }
       reply(id, { armed: state.armed, mode: state.mode });
 
     } else if (cmd === 'pick') {
@@ -334,7 +342,8 @@
     } else if (cmd === 'status') {
       reply(id, {
         count: state.mode === 'stream' ? stream.entries.length : state.files.length,
-        bytes: state.bytes, pending: state.pending, mode: state.mode, failed: state.failed.length
+        bytes: state.bytes, pending: state.pending, mode: state.mode,
+        failed: state.failed.length, skipped: state.skipped
       });
 
     } else if (cmd === 'flush') {

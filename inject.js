@@ -153,6 +153,29 @@ function installAutomation() {
     if (backdrop) backdrop.click();
   };
 
+  // Poll `fn` until it returns something truthy. Returns that value, or null.
+  const waitFor = async (fn, timeoutMs, stepMs = 100) => {
+    const deadline = performance.now() + timeoutMs;
+    for (;;) {
+      const v = fn();
+      if (v) return v;
+      if (performance.now() >= deadline) return null;
+      await wait(stepMs);
+    }
+  };
+
+  // The menu panel THIS trigger owns. Material links the two with
+  // aria-controls + aria-expanded; without that (older/renamed markup) fall
+  // back to the freshest panel in the overlay container, which is the one the
+  // most recent click opened.
+  const openMenuPanelFor = (trigger) => {
+    if (trigger.getAttribute('aria-expanded') === 'false') return null;
+    const id = trigger.getAttribute('aria-controls');
+    if (id) return document.getElementById(id);
+    const panels = document.querySelectorAll('.mat-mdc-menu-panel, .mat-menu-panel');
+    return panels[panels.length - 1] || null;
+  };
+
   const findMenuButtonByLabel = (label) => {
     const target = normalize(label);
     const menuButtons = Array.from(document.querySelectorAll('button.mat-mdc-menu-item'));
@@ -476,13 +499,22 @@ function installAutomation() {
           failureCounts.set(key, (failureCounts.get(key) || 0) + 1);
           continue;
         }
+        // A leftover overlay swallows this click (it hits the backdrop, not the
+        // button), and the previous row's panel is still in the DOM while it
+        // animates out — that is how a document-wide menu-item lookup ends up
+        // re-clicking the LAST row's "Download" and archiving the same
+        // structure over and over. Close first, then only ever read the panel
+        // this trigger owns.
+        closeAnyMenu();
+        await waitFor(() => !document.querySelector('.cdk-overlay-backdrop'), 2000);
         menuButton.click();
         await wait(config.menuDelayMs);
 
-        const items = Array.from(document.querySelectorAll('span.mat-mdc-menu-item-text'));
-        const downloadItem = items.find((el) => el.textContent.trim() === 'Download');
+        const panel = await waitFor(() => openMenuPanelFor(menuButton), config.menuDelayMs * 4);
+        const downloadItem = panel && Array.from(panel.querySelectorAll('span.mat-mdc-menu-item-text'))
+          .find((el) => el.textContent.trim() === 'Download');
         if (!downloadItem) {
-          overlay.log(`${key}: "Download" not found.`, 'warn');
+          overlay.log(`${key}: ${panel ? '"Download" not found.' : 'menu did not open.'}`, 'warn');
           failureCounts.set(key, (failureCounts.get(key) || 0) + 1);
           closeAnyMenu();
           await wait(delayMs);

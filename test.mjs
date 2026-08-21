@@ -177,3 +177,36 @@ assert.strictEqual(isDisabled(el(['mat-mdc-icon-button'], { 'aria-label': 'Next 
   'ordinary enabled button must read as enabled');
 
 console.log('paginator self-check passed: disabledInteractive arrows are followed, real disabled ones are not');
+
+// ---------------------------------------------------------------------------
+// openMenuPanelFor — the fix for "the ZIP holds the same structure N times".
+// A leftover Material overlay eats the next row's trigger click, and the
+// previous row's panel is still in the DOM while it animates out, so a
+// document-wide `span.mat-mdc-menu-item-text` lookup finds the OLD row's
+// "Download" and re-downloads it. Scoping to the panel the trigger owns is
+// what makes that impossible.
+// ---------------------------------------------------------------------------
+const panelSrc = injectSrc.match(/const openMenuPanelFor = \(trigger\) => \{[\s\S]*?\n  \};\n/);
+assert.ok(panelSrc, 'could not find openMenuPanelFor in inject.js');
+const openMenuPanelFor = new Function('document', 'return ' + panelSrc[0]
+  .replace(/^const openMenuPanelFor = /, '').replace(/;\n$/, ''));
+
+const stale = { id: 'menu-1' };
+const fresh = { id: 'menu-2' };
+const doc = (panels) => ({
+  getElementById: (id) => panels.find((p) => p.id === id) || null,
+  querySelectorAll: () => panels
+});
+const trigger = (attrs) => ({ getAttribute: (n) => (n in attrs ? attrs[n] : null) });
+
+assert.strictEqual(
+  openMenuPanelFor(doc([stale, fresh]))(trigger({ 'aria-expanded': 'true', 'aria-controls': 'menu-2' })),
+  fresh, 'must return the panel this trigger owns, not a leftover one');
+assert.strictEqual(
+  openMenuPanelFor(doc([stale]))(trigger({ 'aria-expanded': 'false', 'aria-controls': 'menu-1' })),
+  null, 'a collapsed trigger must yield no panel, so the stale menu is never clicked');
+assert.strictEqual(
+  openMenuPanelFor(doc([stale, fresh]))(trigger({})),
+  fresh, 'without aria-controls, fall back to the freshest overlay panel');
+
+console.log('menu self-check passed: only the trigger’s own panel is read, so a stale menu cannot be re-clicked');
